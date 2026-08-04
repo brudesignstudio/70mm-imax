@@ -55,9 +55,11 @@ export class Developer {
     this.digitalZoom = digitalZoom;
     this.onProgress = onProgress;
 
-    // Replays the raw take. Never attached to the document — audio
-    // is not monitored and video is only ever read as a texture
-    // source, so it does not need to be visible.
+    // Replays the raw take. Kept out of the layout (off-screen, zero
+    // size) rather than truly detached from the document: WebKit
+    // throttles decode on a <video> that is never part of the render
+    // tree at all, which was part of why audio silently dropped out
+    // once developing started. Nothing here needs it to be *seen*.
     //
     // Silenced via volume, not the `muted` property: WebKit hands
     // back a dead-silent audio track from captureStream() on a
@@ -72,6 +74,13 @@ export class Developer {
     this.sourceVideo.playsInline = true;
     this.sourceVideo.setAttribute('webkit-playsinline', '');
     this.sourceVideo.setAttribute('playsinline', '');
+    this.sourceVideo.style.cssText =
+      'position:fixed;left:-9999px;top:0;width:1px;height:1px;opacity:0;pointer-events:none;';
+    document.body.appendChild(this.sourceVideo);
+
+    // The Web Audio graph used to pull real audio out of sourceVideo
+    // for the final recording — see _buildAudioTrack().
+    this.audioCtx = null;
 
     // The grade, offscreen — never appended to the document either.
     this.gradeCanvas = document.createElement('canvas');
@@ -152,7 +161,7 @@ export class Developer {
     v.muted = false;  // volume is already 0; see the constructor's comment
     await this._prime();
 
-    const audioTrack = this._captureAudioTrack(v);
+    const audioTrack = await this._buildAudioTrack(v);
 
     await this.recorder.start({
       audioTrack,
@@ -211,7 +220,33 @@ export class Developer {
     });
   }
 
-  _captureAudioTrack(video) {
+  /**
+   * The audio track for the final recording.
+   *
+   * `video.captureStream().getAudioTracks()` was the original
+   * approach and is what silently dropped sound on every developed
+   * export: WebKit's audio track from a media element's
+   * captureStream() is unreliable — present but dead, or simply
+   * absent — once that element is being read from a second time
+   * this way. Routing the element through the Web Audio graph
+   * instead (MediaElementAudioSourceNode → MediaStreamAudioDestinationNode)
+   * taps the actual decoded audio directly and holds up across
+   * engines. captureStream() remains as a fallback for the rare
+   * browser with no Web Audio API at all.
+   */
+  async _buildAudioTrack(video) {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (Ctx) {
+      try {
+        this.audioCtx = new Ctx();
+        await this.audioCtx.resume().catch(() => {});
+        const source = this.audioCtx.createMediaElementSource(video);
+        const dest = this.audioCtx.createMediaStreamDestination();
+        source.connect(dest);
+        const track = dest.stream.getAudioTracks()[0] || null;
+        if (track) return track;
+      } catch { /* fall through to captureStream() */ }
+    }
     if (typeof video.captureStream !== 'function') return null;
     try { return video.captureStream().getAudioTracks()[0] || null; }
     catch { return null; }
@@ -323,6 +358,7 @@ export class Developer {
   resumeFromBackground() {
     if (!this.sourceVideo.src) return;
     this.recorder.resume();
+    this.audioCtx?.resume().catch(() => {});
     this.sourceVideo.play().catch(() => {});
   }
 
@@ -335,6 +371,11 @@ export class Developer {
     try { this.sourceVideo.pause(); } catch { /* ignore */ }
     this.sourceVideo.removeAttribute('src');
     try { this.sourceVideo.load(); } catch { /* ignore */ }
+    this.sourceVideo.remove();
+    if (this.audioCtx) {
+      try { this.audioCtx.close(); } catch { /* already gone */ }
+      this.audioCtx = null;
+    }
     if (this.renderer) {
       try { this.renderer.destroy(); } catch { /* already gone */ }
       this.renderer = null;

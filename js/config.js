@@ -90,10 +90,19 @@ export const RECORDING = {
    * more decode, not archival. The final bitrate is what actually
    * ships. 70mm grain is high-frequency detail and eats bitrate;
    * starving the encoder turns grain into blocking.
+   *
+   * These are pushed as high as a modern phone's hardware encoder
+   * will sustain at FORMAT.MAX_LONG_EDGE / FORMAT.FPS without
+   * dropping frames — quality lever, not a frame-rate or resolution
+   * one, since those two are what actually risk the stutters this
+   * is meant to avoid (see FORMAT.FPS and MAX_LONG_EDGE).
+   * `videoBitsPerSecond` is a target, not a guarantee — Recorder
+   * already falls back to the UA's own defaults if a browser rejects
+   * it outright (see Recorder.start()).
    */
-  RAW_VIDEO_BPS: 20_000_000,
-  VIDEO_BPS: 12_000_000,
-  AUDIO_BPS: 128_000,
+  RAW_VIDEO_BPS: 30_000_000,
+  VIDEO_BPS: 20_000_000,
+  AUDIO_BPS: 192_000,
 
   /** MediaRecorder chunk interval. */
   TIMESLICE_MS: 1000,
