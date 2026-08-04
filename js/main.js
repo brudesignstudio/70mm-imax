@@ -204,7 +204,7 @@ class App {
     button.querySelector('span').textContent = 'Opening…';
 
     try {
-      const stream = await this.camera.open({ withAudio: this.settings.prefs.audio });
+      const stream = await this.camera.open({ withAudio: true });
 
       this.source.srcObject = stream;
       this.source.muted = true;             // never monitor: instant feedback loop
@@ -369,7 +369,7 @@ class App {
 
     try {
       await this.recorder.start({
-        audioTrack: this.settings.prefs.audio ? this.camera.audioTrack : null,
+        audioTrack: this.camera.audioTrack,
         fps: FORMAT.FPS,
         videoBitsPerSecond: RECORDING.RAW_VIDEO_BPS,
       });

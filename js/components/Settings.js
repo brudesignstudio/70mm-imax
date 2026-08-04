@@ -134,10 +134,6 @@ export class Settings {
         this.prefs.histogram = v; this._savePrefs();
       }),
 
-      this._switch('Record sound', this.prefs.audio, (v) => {
-        this.prefs.audio = v; this._savePrefs();
-      }, 'Takes effect the next time the camera opens.'),
-
       this._switch(
         has.vibrate ? 'Haptics' : 'Haptics (visual tally)',
         this.prefs.haptics,

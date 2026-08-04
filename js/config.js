@@ -309,5 +309,4 @@ export const PREFS = {
   quality: 'high',
   histogram: true,
   haptics: true,
-  audio: true,
 };
