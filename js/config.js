@@ -47,13 +47,20 @@ export const FORMAT = {
   /** Preview render scale relative to the recording resolution. */
   PREVIEW_SCALE: 1.0,
 
-  /** Frames per second requested from the camera and the encoder. */
+  /**
+   * Frames per second requested from the camera and used for both
+   * the raw capture and the developed encode. Capped hard at 30 —
+   * not just requested as `ideal` — because every extra frame here
+   * is one more frame the develop pass has to grade: half the fps
+   * is roughly half the heat and half the battery draw, both for
+   * the live camera (native decode/encode, so it barely matters)
+   * and for developing (which does the real work).
+   */
   FPS: 30,
 
   /**
-   * IMAX runs at 24fps. Rendering at 24 would make the preview feel
-   * broken on a 60Hz phone, so we render at display rate and only
-   * quantise the *grain* to CADENCE (see LOOK.grain.cadence).
+   * IMAX runs at 24fps. The develop pass renders at FPS and only
+   * quantises the *grain* to CADENCE (see LOOK.grain.cadence).
    */
   CADENCE: 24,
 };
@@ -72,11 +79,19 @@ export const ROTATE_PROMPT =
    RECORDING
    =============================================================== */
 export const RECORDING = {
-  /** Hard limit: a 3-minute magazine. Enforced to the millisecond. */
+  /** Hard limit: a 3-minute reel. Enforced to the millisecond. */
   MAX_MS: 3 * 60 * 1000,
 
-  /** Target bitrates. 70mm grain is high-frequency detail and eats
-   *  bitrate; starving the encoder turns grain into blocking. */
+  /**
+   * Two encodes happen per take now: a raw capture straight off the
+   * sensor while shooting, and a graded re-encode during developing.
+   * The raw intermediate is discarded the moment developing finishes,
+   * so it can afford a generous bitrate — it only has to survive one
+   * more decode, not archival. The final bitrate is what actually
+   * ships. 70mm grain is high-frequency detail and eats bitrate;
+   * starving the encoder turns grain into blocking.
+   */
+  RAW_VIDEO_BPS: 20_000_000,
   VIDEO_BPS: 12_000_000,
   AUDIO_BPS: 128_000,
 
@@ -198,10 +213,6 @@ export const LOOK = {
     weaveSpeed: 0.55,
     breathing: 0.0016, // fractional scale oscillation
     breathingSpeed: 0.28,
-    /** Gate movement during *live preview* is disorienting when you
-     *  are trying to frame a shot, so it is off by default there
-     *  and on during playback. */
-    livePreview: false,
   },
 
   /* --- Print / viewing -----------------------------------------
@@ -226,6 +237,54 @@ export const QUALITY = {
 };
 
 /* ===============================================================
+   EXPORT FRAME
+   ---------------------------------------------------------------
+   The saved file isn't just the graded gate — it's composited onto
+   a strip of film: the graded image, kept in whatever orientation
+   it was actually shot in, with a row of sprocket perforations
+   above and below. Baked into the pixels once, during developing,
+   so it's identical in the in-app player, the gallery, and whatever
+   lands in Photos.
+   =============================================================== */
+export const EXPORT_FRAME = {
+  /** Each sprocket bar's height, as a fraction of the frame width —
+   *  tied to width rather than height so the perforations read as a
+   *  constant physical size regardless of the gate's own aspect. */
+  barRatio: 0.317,
+
+  /** Perforations per bar, top and bottom. */
+  perforations: 15,
+
+  /** How much of each cell a perforation fills, both axes. */
+  fillRatio: 0.62,
+
+  /** Perforation corner radius, as a fraction of its own size. */
+  cornerRatio: 0.22,
+
+  barColor: '#050505',
+  perfColor: '#efe7da',
+};
+
+/**
+ * The finished aspect ratio (width ÷ height) of a developed take —
+ * the gate plus two sprocket bars. Derived, not measured: barRatio
+ * is defined relative to width, and gate height is itself a
+ * function of FORMAT.ASPECT, so this reduces to a constant with no
+ * dependency on any particular take's actual pixel dimensions.
+ * Mirrored as --export-aspect in main.css for the playback frame
+ * and the gallery thumbnails.
+ */
+export const EXPORT_ASPECT = 1 / (1 / FORMAT.ASPECT + 2 * EXPORT_FRAME.barRatio);
+
+/* ===============================================================
+   ZOOM
+   =============================================================== */
+export const ZOOM = {
+  levels: [0.5, 1, 2],
+  default: 1,
+};
+
+/* ===============================================================
    STORAGE KEYS
    =============================================================== */
 export const STORAGE = {
@@ -243,6 +302,5 @@ export const PREFS = {
   quality: 'high',
   histogram: true,
   haptics: true,
-  gateWeaveLive: false,
   audio: true,
 };

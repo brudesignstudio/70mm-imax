@@ -47,7 +47,11 @@ export class CameraManager {
       exposureCompensation: false,
       whiteBalanceMode: false,
       torch: false,
+      zoom: false,
     };
+    this.zoomRange = null;   // { min, max, step } when supports.zoom
+    this._withAudio = true;  // remembered so a lens switch can match it
+    this.lens = 'main';      // 'main' | 'ultrawide' — which physical lens is open
   }
 
   /* =============================================================
@@ -56,9 +60,10 @@ export class CameraManager {
 
   /**
    * @param {boolean} withAudio  include a microphone track
+   * @param {'main'|'ultrawide'} lens  which physical lens this call is for
    * @returns {Promise<MediaStream>}
    */
-  async open({ withAudio = true, deviceId = null } = {}) {
+  async open({ withAudio = true, deviceId = null, lens = 'main' } = {}) {
     if (!navigator.mediaDevices?.getUserMedia) {
       throw new Error('This browser does not expose a camera to web pages.');
     }
@@ -67,16 +72,21 @@ export class CameraManager {
     }
 
     this.close();
+    this._withAudio = withAudio;
 
     // Ask for the largest sensor read-out the UA will negotiate.
     // `ideal` rather than `exact` everywhere: an over-specified
     // constraint set is the most common cause of OverconstrainedError
     // on mid-range Android hardware.
+    //
+    // frameRate is capped hard at FORMAT.FPS (not just `ideal`): every
+    // frame above that is one more frame the develop pass has to
+    // grade later for no benefit, since IMAX itself runs at 24fps.
     const video = {
       facingMode: { ideal: 'environment' },
       width:  { ideal: 3840 },
       height: { ideal: 2160 },
-      frameRate: { ideal: FORMAT.FPS, max: 60 },
+      frameRate: { ideal: FORMAT.FPS, max: FORMAT.FPS },
       // Kill the UA's own beautification/stabilisation where offered;
       // we are doing our own grade and want the flattest source.
       resizeMode: 'none',
@@ -97,7 +107,7 @@ export class CameraManager {
       // Two common recoveries, in order of likelihood.
       if (err.name === 'OverconstrainedError' || err.name === 'NotFoundError') {
         stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
+          video: deviceId ? { deviceId: { exact: deviceId } } : { facingMode: { ideal: 'environment' } },
           audio: withAudio,
         });
       } else if (err.name === 'NotAllowedError' && withAudio) {
@@ -109,13 +119,14 @@ export class CameraManager {
     }
 
     this._adopt(stream);
+    this.lens = lens;
 
     // Device labels are only readable *after* permission is granted,
     // so lens selection happens on the second pass.
-    if (!deviceId) {
+    if (!deviceId && lens === 'main') {
       const better = await this._findMainRearCamera();
       if (better && better !== this.settings.deviceId) {
-        try { return await this.open({ withAudio, deviceId: better }); }
+        try { return await this.open({ withAudio, deviceId: better, lens }); }
         catch { /* keep the stream we already have */ }
       }
     }
@@ -141,6 +152,11 @@ export class CameraManager {
       this.supports.exposureCompensation = !!c.exposureCompensation;
       this.supports.whiteBalanceMode = Array.isArray(c.whiteBalanceMode) && c.whiteBalanceMode.length > 1;
       this.supports.torch = !!c.torch;
+
+      this.supports.zoom = !!c.zoom && c.zoom.max > c.zoom.min;
+      this.zoomRange = this.supports.zoom
+        ? { min: c.zoom.min, max: c.zoom.max, step: c.zoom.step || 0.1 }
+        : null;
     }
   }
 
@@ -169,6 +185,61 @@ export class CameraManager {
       .sort((a, b) => b.score - a.score);
 
     return scored.length ? scored[0].id : null;
+  }
+
+  /**
+   * Find a genuine ultra-wide physical lens for the 0.5× button.
+   * There is no API for "give me the 0.5× camera" — only enumerated
+   * devices with human-written labels — so this is the AVOID regex
+   * run in reverse. iOS Safari reports one synthetic rear device
+   * covering every focal length, so there is nothing to find there;
+   * the 0.5× control is disabled rather than pretending.
+   */
+  async findUltrawideDevice() {
+    if (isIOS) return null;
+    if (!navigator.mediaDevices.enumerateDevices) return null;
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      this.devices = all.filter((d) => d.kind === 'videoinput');
+    } catch { return null; }
+
+    const match = this.devices.find((d) => /(ultra|0\.5|wide angle)/i.test(d.label || ''));
+    return match ? match.deviceId : null;
+  }
+
+  /** Switch to the ultra-wide lens (0.5×), if this device has one. */
+  async openUltrawide() {
+    const id = await this.findUltrawideDevice();
+    if (!id) return { ok: false, reason: 'unsupported' };
+    try {
+      await this.open({ withAudio: this._withAudio, deviceId: id, lens: 'ultrawide' });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: err.name || 'failed' };
+    }
+  }
+
+  /** Back to the main rear lens (1× and 2× both live here). */
+  async openMain() {
+    if (this.lens === 'main') return { ok: true };
+    try {
+      await this.open({ withAudio: this._withAudio, lens: 'main' });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, reason: err.name || 'failed' };
+    }
+  }
+
+  /**
+   * Hardware zoom via the MediaTrack `zoom` constraint (Chrome on
+   * Android, on devices that expose it). iOS Safari never does, so
+   * the caller falls back to a digital crop baked in at develop time
+   * — see main.js.
+   */
+  async setZoom(level) {
+    if (!this.supports.zoom) return { ok: false, reason: 'unsupported' };
+    const { min, max } = this.zoomRange;
+    return this._apply({ zoom: Math.max(min, Math.min(max, level)) });
   }
 
   _friendly(err) {

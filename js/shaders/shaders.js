@@ -158,6 +158,7 @@ varying vec2 vUV;
 uniform sampler2D uSrc;
 uniform sampler2D uBloom;
 uniform sampler2D uHalo;
+uniform sampler2D uGrainTex;
 
 uniform vec2  uSrcTexel;     // one source texel, expressed in output UV
 uniform vec2  uRes;          // output resolution in pixels
@@ -194,6 +195,7 @@ uniform float uGrainSize;
 uniform float uGrainChroma;
 uniform float uGrainShadow;
 uniform float uGrainSeed;
+uniform vec2  uGrainOffset;  // per-24fps-tick tile offset, computed on the CPU
 
 uniform float uDither;
 
@@ -281,14 +283,16 @@ void main() {
         amplitude peaks in the mid-densities and falls away in both
         clear film and solid black. Channels are partly
         decorrelated because the three dye layers are independent.
-        The seed is quantised to the projection cadence on the CPU,
-        so grain re-rolls 24×/second regardless of refresh rate. */
+        The noise itself is a small texture baked once on the CPU,
+        not recomputed per pixel — uGrainOffset is quantised to the
+        projection cadence, so the *sampled position* re-rolls
+        24×/second regardless of refresh rate, which reads exactly
+        like the noise itself changing without paying for three
+        sin()-hash calls every pixel, every frame. */
   if (uGrainStrength > 0.0001) {
     vec2 gp = floor(uv * uRes / max(uGrainSize, 0.25));
-    float n0 = hash2(gp + uGrainSeed * 1.13);
-    float n1 = hash2(gp + uGrainSeed * 1.13 + 37.7);
-    float n2 = hash2(gp + uGrainSeed * 1.13 + 91.3);
-    vec3 n = vec3(n0, mix(n0, n1, uGrainChroma), mix(n0, n2, uGrainChroma)) - 0.5;
+    vec3 texN = texture2D(uGrainTex, (gp + uGrainOffset) * 0.0078125).rgb; // × 1/128
+    vec3 n = vec3(texN.r, mix(texN.r, texN.g, uGrainChroma), mix(texN.r, texN.b, uGrainChroma)) - 0.5;
 
     float ld = luma(col);
     float amp = 1.0 - pow(abs(ld * 2.0 - 1.0), 1.6);   // bell over mid-densities

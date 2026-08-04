@@ -9,7 +9,7 @@
  * Recorded takes never touch the cache; they live in IndexedDB.
  */
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = `imax70-${VERSION}`;
 
 const SHELL = [
@@ -23,6 +23,7 @@ const SHELL = [
   './js/shaders/shaders.js',
   './js/components/CameraManager.js',
   './js/components/FilmRenderer.js',
+  './js/components/Developer.js',
   './js/components/Recorder.js',
   './js/components/OrientationGuard.js',
   './js/components/Histogram.js',

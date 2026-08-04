@@ -33,7 +33,7 @@ export function clearKey(key) {
 }
 
 /* ---------------------------------------------------------------
-   IndexedDB — the magazine shelf
+   IndexedDB — the reel shelf
    --------------------------------------------------------------- */
 let dbPromise = null;
 

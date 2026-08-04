@@ -25,7 +25,7 @@ export function hapticsSupported() { return canVibrate; }
 const PATTERNS = {
   start:   [18],
   stop:    [12, 60, 24],
-  limit:   [24, 70, 24, 70, 40],   // magazine ran out
+  limit:   [24, 70, 24, 70, 40],   // reel ran out
   tick:    [8],
   error:   [40, 50, 40],
 };

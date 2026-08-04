@@ -63,6 +63,11 @@
      pre-script fallback — GateFit sets exact pixels — but it must
      agree, or the frame jumps on first paint. */
   --gate-aspect: 1 / 1.43;
+
+  /* A developed take's aspect: the gate plus two sprocket bars,
+     mirrored from EXPORT_ASPECT in config.js. Same pre-script-fallback
+     reasoning as --gate-aspect above. */
+  --export-aspect: 1 / 2.064;
 }
 
 body {
@@ -243,6 +248,11 @@ body {
 /* Once GateFit has measured, the pixel size wins outright. */
 .frame[data-fitted] { width: auto; max-width: none; aspect-ratio: auto; }
 
+/* A stage opted into a different fixed ratio (see GateFit.js) needs
+   the same pre-script fallback as --gate-aspect above, or its frame
+   is the wrong shape for one frame before JS measures it. */
+.stage[data-ratio="export"] .frame { aspect-ratio: var(--export-aspect); }
+
 .frame__canvas, .frame__video {
   position: absolute;
   inset: 0;
@@ -251,15 +261,12 @@ body {
   object-fit: cover;
   background: #000;
 }
-
-/* The source <video> never shows; it is only a texture provider. */
-#source {
-  position: absolute;
-  width: 2px; height: 2px;
-  opacity: 0.0001;
-  pointer-events: none;
-  top: 0; left: 0;
-}
+/* A developed take's own pixel aspect and --export-aspect are the
+   same constant by construction, but object-fit: contain is used
+   here anyway rather than cover — if integer pixel rounding ever
+   puts them a hair apart, contain lets a sliver of letterbox show
+   rather than cropping into the sprocket holes. */
+.frame--playback .frame__video { object-fit: contain; }
 
 /* Held the wrong way for the gate, the live image is defocused
    rather than hidden — the camera keeps running so recovery is
@@ -296,17 +303,19 @@ body {
   font-family: var(--mono);
   font-size: 11px;
   letter-spacing: 0.14em;
-  /* The HUD sits over live imagery, so every glyph carries its
-     own shadow rather than relying on a background. */
-  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.95), 0 0 3px rgba(0, 0, 0, 0.85);
+  /* The HUD sits over live imagery, so every glyph carries its own
+     shadow rather than relying on a background — but a tight, dense
+     shadow reads as a crisp outline, where a wide soft one reads as
+     the text itself being blurry. Small radius, high opacity. */
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 1px rgba(0, 0, 0, 0.95);
 }
 .hud__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .hud__row--bottom { align-items: flex-end; }
 .hud__group { display: flex; align-items: center; gap: 9px; }
 
-.hud__timer { color: var(--ink); font-variant-numeric: tabular-nums; }
-.hud__sep, .hud__remain { color: var(--ink-faint); font-variant-numeric: tabular-nums; }
-.hud__tag { color: var(--ink-faint); font-size: 10px; letter-spacing: 0.2em; }
+.hud__timer { color: #fff; font-variant-numeric: tabular-nums; }
+.hud__sep, .hud__remain { color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+.hud__tag { color: var(--ink); font-size: 10px; letter-spacing: 0.2em; }
 
 .rec {
   width: 8px; height: 8px;
@@ -393,15 +402,15 @@ body {
 }
 .histogram[hidden] { display: none; }
 
-/* magazine consumption bar */
-.magazine {
+/* reel consumption bar */
+.reel {
   position: absolute;
   left: 0; right: 0; bottom: 0;
   height: 1.5px;
   background: rgba(255, 255, 255, 0.12);
   pointer-events: none;
 }
-.magazine i {
+.reel i {
   display: block;
   height: 100%;
   width: 0%;
@@ -409,10 +418,52 @@ body {
   box-shadow: 0 0 10px var(--glow);
   transition: width 240ms linear;
 }
-.app[data-recording="true"] .magazine i {
+.app[data-recording="true"] .reel i {
   background: var(--rec);
   box-shadow: 0 0 10px rgba(255, 59, 48, 0.6);
 }
+
+/* ============================================================
+   ZOOM
+   Lives in the bottom HUD row alongside the AE/AWB/EV chips, not
+   as an independent floating overlay — that way it always reserves
+   its own space instead of guessing a pixel offset that would only
+   happen to clear whatever else is in that row on one screen size.
+   A dark fill plus the rim highlight, not a real backdrop-filter:
+   the same reasoning as the in-gate chips above — this sits over a
+   continuously-updating live video, and re-blurring that every
+   frame costs real GPU time for no visible gain over a flat panel.
+   ============================================================ */
+.zoom {
+  pointer-events: auto;
+  z-index: 5;
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid var(--line);
+  box-shadow: var(--rim), 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.zoom button {
+  min-width: 34px;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--ink-dim);
+  transition: color 180ms var(--ease), background 180ms var(--ease);
+}
+.zoom button[aria-pressed="true"] {
+  color: #02141d;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--glow);
+}
+.zoom button[hidden] { display: none; }
+.app[data-recording="true"] .zoom { opacity: 0.4; pointer-events: none; }
 
 /* ============================================================
    RAILS + CONTROLS
@@ -652,14 +703,38 @@ body {
 .screen--processing {
   background: radial-gradient(90% 70% at 50% 50%, #06131c 0%, #000 70%);
 }
+.screen--processing .stage { padding: 6px; z-index: 1; }
+/* The develop canvas is mounted here once developing starts, so an
+   empty frame during the brief priming window should still read as
+   "about to happen" rather than an empty black hole. */
+.screen--processing .frame { background: #050505; }
+
 .processing__inner {
   position: absolute;
-  inset: 0;
+  left: 0; right: 0; bottom: 0;
+  z-index: 2;
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
-  gap: 14px;
+  gap: 12px;
+  padding: 32px 24px calc(30px + var(--safe-b));
+  background: linear-gradient(rgba(0, 0, 0, 0) 0%, rgba(0, 0, 0, 0.8) 55%, rgba(0, 0, 0, 0.92) 100%);
+  pointer-events: none;
+}
+.processing__bar {
+  width: min(220px, 60vw);
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+.processing__bar i {
+  display: block;
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--glow);
+  transition: width 200ms linear;
 }
 .processing__reel { display: flex; gap: 7px; }
 .processing__reel i {
@@ -731,7 +806,7 @@ body {
 }
 .take__thumb {
   width: 100%;
-  aspect-ratio: var(--gate-aspect);
+  aspect-ratio: var(--export-aspect);
   object-fit: cover;
   background: #000;
 }
@@ -989,13 +1064,14 @@ body {
 .app[data-gate="portrait"] .rail--right { bottom: 0; padding-bottom: var(--safe-b); }
 
 /* A tall gate is narrow, so the bottom HUD row stacks instead of
-   trying to fit the chips and the histogram side by side. */
+   trying to fit the chips, zoom and the histogram side by side. */
 .app[data-gate="portrait"] .hud__row--bottom {
   flex-direction: column;
   align-items: stretch;
   gap: 10px;
 }
-.app[data-gate="portrait"] .histogram { order: -1; align-self: flex-end; }
+.app[data-gate="portrait"] .histogram { order: -2; align-self: flex-end; }
+.app[data-gate="portrait"] .zoom { order: -1; align-self: center; }
 .app[data-gate="portrait"] .hud__row--top { flex-wrap: wrap; gap: 4px 10px; }
 .app[data-gate="portrait"] .hud__tag { font-size: 9px; letter-spacing: 0.14em; }
 

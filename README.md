@@ -1,7 +1,7 @@
 # 70MM — Large Format Camera
 
 A mobile-first PWA that shoots on a digital emulation of 70mm large-format
-negative. Tall 1:1.43 gate, three minutes to a magazine, no libraries.
+negative. Tall 1:1.43 gate, three minutes to a reel, no libraries.
 
 Built with plain HTML, CSS and ES modules. No build step — serve the folder.
 
@@ -43,11 +43,12 @@ imax-project/
     ├── main.js                 app controller + state machine
     ├── shaders/shaders.js      GLSL ES 1.00 for the film pipeline
     ├── components/
-    │   ├── CameraManager.js    getUserMedia, lens selection, manual control
-    │   ├── FilmRenderer.js     the optical bench (WebGL)
-    │   ├── Recorder.js         MediaRecorder over canvas.captureStream()
+    │   ├── CameraManager.js    getUserMedia, lens selection, zoom, manual control
+    │   ├── FilmRenderer.js     the optical bench (WebGL) — runs only while developing
+    │   ├── Developer.js        raw take → graded, sprocketed final file
+    │   ├── Recorder.js         MediaRecorder over a stream (camera, live; canvas, developing)
     │   ├── OrientationGuard.js orientation enforcement
-    │   ├── GateFit.js          exact gate sizing, in pixels
+    │   ├── GateFit.js          exact gate/export sizing, in pixels
     │   ├── Histogram.js        live RGB + luminance parade
     │   ├── Playback.js         review transport
     │   ├── Gallery.js          IndexedDB shelf
@@ -60,19 +61,34 @@ imax-project/
 
 ## How the image is made
 
-The camera never reaches the screen directly. Every frame goes through a
-WebGL pipeline and lands on a canvas that is **both the viewfinder and the
-recording source** — `canvas.captureStream()` is what `MediaRecorder`
-encodes. There is no export-time re-grade and no chance of the preview and
-the file drifting apart.
+Shooting and grading are two separate passes, on purpose:
+
+**Shooting** records the raw camera `MediaStream` straight into
+`MediaRecorder` — no canvas, no shader in between. The viewfinder is the
+`<video>` element itself, shown directly. This is deliberately as close to
+the stock Camera app as a web page gets: no added latency between the lens
+and the screen, no GPU work competing for thermal headroom while you're
+actually holding the phone up to shoot.
+
+**Developing** is where the film pipeline runs, exactly once, after the
+shutter closes. The raw take is played back through an offscreen `<video>`
+into `FilmRenderer` (WebGL), and the graded output is composited onto a
+strip of film — sprocket perforations top and bottom — on a 2-D canvas,
+which is what actually gets re-encoded (see `Developer.js`). That canvas is
+shown live on the "Developing" screen, so watching a take develop is watching
+the real output, not a progress spinner. It takes about as long as the take
+itself — a 3-minute take takes roughly 3 minutes to develop — which is the
+trade for a viewfinder with no shader in its way.
 
 ```
-video ──┬───────────────────────────────────────────────┐
-        │                                               │
-        └─▶ BRIGHT ─▶ blurH ─▶ blurV ──▶ bloom ─────┐   │
-                            └─▶ DOWN ─▶ blurH ─▶ blurV ─▶ halation
-                                                    │   │
-                                             COMPOSITE ◀┘
+raw video ──┬───────────────────────────────────────────────┐
+            │                                               │
+            └─▶ BRIGHT ─▶ blurH ─▶ blurV ──▶ bloom ─────┐   │
+                                └─▶ DOWN ─▶ blurH ─▶ blurV ─▶ halation
+                                                        │   │
+                                                 COMPOSITE ◀┘
+                                                        │
+                                     blitted into the sprocket frame
 ```
 
 `COMPOSITE` runs the chain in the order a real imaging system does:
@@ -98,17 +114,51 @@ constant per frame — weave offset, breathing scale, grain seed — is computed
 on the CPU and passed as a uniform; the shaders do no work that could have
 been hoisted.
 
-Two details that do most of the "this looks like film" work:
+Three details that do most of the "this looks like film" work:
 
 - **Grain lives in density, not in signal.** Clear film and solid black are
   nearly grainless; the mids carry it. Uniform noise over the whole frame is
   what makes digital grain read as a filter.
 - **Grain is quantised to 24fps.** It must *hold* for a whole frame. Re-rolling
   it every 60Hz refresh is exactly what video noise does.
+- **Grain is a texture, not a per-pixel computation.** A small tileable noise
+  texture is generated once, on the CPU, at startup; the shader samples it
+  with a per-24fps-tick offset instead of computing three `sin()`-hash calls
+  per pixel every frame. Same visual result, far less GPU work — see
+  `createGrainTexture` in `js/utils/webgl.js`.
 
 All of it is in `LOOK` in [`js/config.js`](js/config.js), and every value is a
-live slider in the Settings sheet. Overrides are stored sparsely — only what
-you changed — so revisions to the reference negative still reach you.
+live slider in the Settings sheet. A change there is picked up by the *next*
+take's develop pass — there is no live preview to update on the spot any
+more. Overrides are stored sparsely — only what you changed — so revisions to
+the reference negative still reach you.
+
+### The sprocket frame
+
+The saved file isn't just the graded gate — it's composited onto a strip of
+film: the graded image, kept in whatever orientation it was actually shot in,
+with a row of sprocket perforations above and below, baked into the pixels
+once during developing. That's the file that goes into the gallery, into
+in-app playback, and into Photos — there's no separate "clean" version.
+Geometry lives in `EXPORT_FRAME` in [`js/config.js`](js/config.js);
+`EXPORT_ASPECT` is the resulting constant aspect ratio, mirrored in
+`--export-aspect` in `main.css` for the playback frame and gallery
+thumbnails.
+
+### Zoom
+
+0.5× switches to a genuine ultra-wide physical lens where the browser
+enumerates one (Chrome/Android on multi-lens phones); iOS Safari reports one
+synthetic rear camera covering every focal length, so there is nothing to
+switch to and the control stays hidden rather than pretending. 2× uses the
+hardware `zoom` MediaTrack constraint where a browser exposes one, and falls
+back to a CSS scale on the live viewfinder with the same factor baked into
+the actual crop at develop time otherwise (`FilmRenderer.setDigitalZoom`) —
+so the fallback path is still WYSIWYG, just resolved a pass later. Zoom is
+locked for the duration of a take: a lens switch would swap the
+`MediaStream` track out from under a live `MediaRecorder`, and the digital
+fallback's baked-in crop is a single constant for the whole develop pass, not
+something that can vary frame-to-frame.
 
 ---
 
@@ -135,8 +185,14 @@ you changed — so revisions to the reference negative still reach you.
 - **Container:** MP4/H.264 where available (Safari, recent Chrome), WebM
   otherwise. MP4 is tried first everywhere because it is the only container
   iOS will save into Photos.
-- **Bitrate:** 12 Mbps. Grain is high-frequency detail; starving the encoder
-  turns it into blocking.
+- **Bitrate:** two stages. The raw capture (shooting) runs at 20 Mbps — a
+  generous, discardable intermediate — and the final re-encode (developing)
+  at 12 Mbps. Grain is high-frequency detail; starving the encoder turns it
+  into blocking.
+- **Frame rate:** capped hard at 30fps — not just requested as `ideal` — for
+  both the camera constraint and the final encode. IMAX itself runs at 24fps,
+  so nothing above 30 buys anything, and every extra frame is one more frame
+  the develop pass has to grade.
 
 ---
 
@@ -152,12 +208,19 @@ screen before you shoot.
 | Save to Photos | via share sheet | via share sheet, **MP4 only** | `<a download>` → Files |
 | Tap to focus | ✅ `pointsOfInterest` | ❌ not implemented | reticle still confirms the tap; camera stays on continuous AF |
 | Exposure lock / WB lock | ✅ where the device reports it | ❌ | control is hidden rather than shown doing nothing |
-| Exposure compensation | ✅ sensor-level | ❌ | same value applied as linear-light gain *before* the tone curve, so it rolls through the shoulder instead of clipping |
-| Flash | ✅ `torch` constraint | ❌ no API at all | button stays visible, struck through, and says why |
+| Exposure compensation | ✅ sensor-level | ❌ | same value applied as linear-light gain *before* the tone curve, so it rolls through the shoulder instead of clipping — at develop time |
+| Flash | ✅ `torch` constraint | ❌ no API at all | button stays visible, struck through |
+| 0.5× zoom | ✅ where a distinct ultra-wide device is enumerated | ❌ one synthetic rear device | control is hidden rather than shown doing nothing |
+| 2× zoom | ✅ hardware `zoom` constraint where exposed | ❌ | CSS scale live, baked into the crop at develop time |
 | Haptics | ✅ `navigator.vibrate` | ❌ no API reaches the Taptic Engine | one-frame luminance pulse on the gate — a tally, which is what the haptic was for |
 | Orientation lock | ✅ (requires fullscreen) | ❌ | guard stays live; rotating mid-take stops the take cleanly |
-| Fullscreen | ✅ | ❌ for non-`<video>` elements | install to Home Screen — the manifest requests fullscreen |
+| Fullscreen | ✅ | ❌ for non-`<video>` elements | button is hidden rather than shown failing; install to Home Screen instead — the manifest requests fullscreen |
 | Wake lock | ✅ | ✅ 16.4+ | screen may dim on older iOS |
+
+None of these show a pop-up explaining the gap — the control itself (hidden,
+struck through, or simply inert) is the explanation. The intro screen's
+capability report is the one place the app talks about what it can and
+can't do.
 
 There is no web API for a photographic flash — `torch` is a continuous lamp.
 That happens to be the right thing for a movie camera anyway.
@@ -195,8 +258,24 @@ out one WebGL context. Losing it deliberately makes the viewfinder
 unrecoverable for the life of the page — including on the
 `webglcontextrestored` path, which is precisely when a rebuild is needed.
 
-**Why recording stops when the app is backgrounded.** The OS suspends the
-camera; a take that continued would record frozen frames.
+**Why recording stops when the app is backgrounded, but developing only
+pauses.** The OS suspends the camera; a take that continued would record
+frozen frames, so shooting closes out the take instead. Developing isn't
+camera-bound — it's an offscreen `<video>` replaying a file already on disk
+— so it can simply pause and resume (`Developer.pauseForBackground` /
+`resumeFromBackground`) without losing anything.
+
+**Why shooting and developing are two separate passes.** The obvious design
+records the graded picture live, the way earlier revisions of this app did:
+one shader, one encode, no second pass. The cost is a live 60Hz WebGL chain
+running continuously while you're holding the phone up to frame a shot —
+real heat, real battery, and a shader between the lens and the screen that
+reads as lag next to a stock camera app. Splitting shooting (raw stream,
+`MediaRecorder`, nothing else) from developing (the grade, run once, after
+the fact) trades a wait after the shutter for a viewfinder with none of
+that cost. `Developer.js` replays the raw take through the same
+`FilmRenderer` and re-encodes through the same `Recorder` shooting uses, so
+it's the same pipeline, just decoupled from real time.
 
 ---
 
@@ -205,4 +284,5 @@ camera; a take that continued would record frozen frames.
 Implemented: orientation lock, haptics (with fallback), fullscreen, PWA
 install, offline after install, live histogram, tap-to-focus reticle,
 exposure lock, white balance lock, manual exposure compensation, flash,
-wake lock, and an IndexedDB gallery that survives reloads.
+0.5×/2× zoom, wake lock, an IndexedDB gallery that survives reloads, and a
+raw-shoot / develop-after pipeline that keeps the viewfinder shader-free.

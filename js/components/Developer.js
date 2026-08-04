@@ -1,0 +1,335 @@
+/**
+ * Developer.js
+ * ---------------------------------------------------------------
+ * Turns a raw take into the finished one.
+ *
+ * Shooting records the raw camera stream untouched — no shader, no
+ * heat, no lag; see Recorder + main.js. All of the actual film
+ * pipeline runs here, once, after the shutter is released: the raw
+ * recording is played back through FilmRenderer (the grade) and
+ * composited onto a strip of film — sprocket perforations top and
+ * bottom, the picture kept in whatever orientation it was actually
+ * shot in — on a plain 2D canvas, which is what gets re-encoded
+ * through the same Recorder class shooting uses.
+ *
+ * That means developing takes about as long as the take itself (a
+ * 3-minute take takes roughly 3 minutes to develop) — the trade for
+ * a viewfinder that never runs a shader. The "Developing" screen
+ * exists either way; this is what it is actually doing now.
+ */
+
+import { FORMAT, RECORDING, EXPORT_FRAME } from '../config.js';
+import { FilmRenderer } from './FilmRenderer.js';
+import { Recorder } from './Recorder.js';
+
+function roundRectPath(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+export class Developer {
+  /**
+   * @param {object} opts { look, quality, digitalZoom, onProgress }
+   *   look        the live LOOK object from Settings (grade to apply)
+   *   quality     QUALITY tier key
+   *   digitalZoom baked-in crop zoom chosen before the take started,
+   *               for lenses/browsers with no hardware zoom (1 = none)
+   *   onProgress  (fraction: number) => void, 0..1
+   */
+  constructor({ look, quality = 'high', digitalZoom = 1, onProgress } = {}) {
+    this.look = look;
+    this.quality = quality;
+    this.digitalZoom = digitalZoom;
+    this.onProgress = onProgress;
+
+    // Replays the raw take. Never attached to the document — audio
+    // is not monitored (muted) and video is only ever read as a
+    // texture source, so it does not need to be visible.
+    this.sourceVideo = document.createElement('video');
+    this.sourceVideo.muted = true;
+    this.sourceVideo.playsInline = true;
+    this.sourceVideo.setAttribute('webkit-playsinline', '');
+    this.sourceVideo.setAttribute('playsinline', '');
+
+    // The grade, offscreen — never appended to the document either.
+    this.gradeCanvas = document.createElement('canvas');
+    this.renderer = null;
+
+    // What actually gets recorded: the graded frame blitted onto a
+    // strip of film. This one *is* meant to be shown — the caller
+    // can mount it wherever the "Developing" screen wants a live
+    // preview — but nothing here requires it to be in the document.
+    this.exportCanvas = document.createElement('canvas');
+    this.ctx = this.exportCanvas.getContext('2d');
+    this.barHeight = 0;
+
+    this.recorder = new Recorder(
+      { getStream: (fps) => this.exportCanvas.captureStream(fps) },
+      {
+        onStop: (result) => this._onRecorderStop(result),
+        onError: (err) => { this._cleanup(); this._rejectFinal?.(err); },
+      }
+    );
+
+    this._driving = false;
+    this._rvfcHandle = 0;
+    this._barsDrawn = false;
+    this._durationMs = 1;
+
+    // Rare on a mobile GPU under memory pressure, but developing can
+    // run for minutes — long enough to actually hit it.
+    this.gradeCanvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault();
+      this._cleanup();
+      this._rejectFinal?.(new Error('The graphics context was lost while developing.'));
+    });
+  }
+
+  /**
+   * @param {{ blob: Blob, durationMs: number }} rawTake
+   * @returns {Promise<{ blob: Blob, mimeType: string, durationMs: number, width: number, height: number }>}
+   */
+  develop(rawTake) {
+    this._durationMs = Math.max(1, rawTake.durationMs || 1);
+    const rawURL = URL.createObjectURL(rawTake.blob);
+    this._rawURL = rawURL;
+
+    return new Promise((resolve, reject) => {
+      this._resolveFinal = resolve;
+      this._rejectFinal = reject;
+      this._run(rawURL).catch((err) => { this._cleanup(); reject(err); });
+    });
+  }
+
+  async _run(rawURL) {
+    const v = this.sourceVideo;
+    v.src = rawURL;
+
+    await new Promise((res, rej) => {
+      const onMeta = () => { v.removeEventListener('error', onErr); res(); };
+      const onErr = () => { v.removeEventListener('loadedmetadata', onMeta); rej(new Error('The raw take could not be decoded.')); };
+      v.addEventListener('loadedmetadata', onMeta, { once: true });
+      v.addEventListener('error', onErr, { once: true });
+    });
+    await this._fixDuration(v);
+
+    this.renderer = new FilmRenderer(this.gradeCanvas, this.look);
+    // Synced to the footage's own clock, not wall time, so gate
+    // weave/breathing/grain phase are deterministic and unaffected
+    // by any pause/resume while backgrounded.
+    this.renderer.startedAt = 0;
+    this.renderer.setQuality(this.quality);
+    this.renderer.setDigitalZoom(this.digitalZoom);
+    this.renderer.setSource(v);
+
+    await v.play();
+    await this._prime();
+
+    const audioTrack = this._captureAudioTrack(v);
+
+    await this.recorder.start({
+      audioTrack,
+      fps: FORMAT.FPS,
+      videoBitsPerSecond: RECORDING.VIDEO_BPS,
+      // Belt and braces, same reasoning as live recording: 'ended'
+      // is the normal path, this is the guaranteed ceiling.
+      maxMs: this._durationMs + 8000,
+    });
+
+    this._startPump();
+    v.addEventListener('ended', () => this._finish(), { once: true });
+  }
+
+  /**
+   * MediaRecorder output — a canvas.captureStream() source
+   * especially, but not only that — can land with wrong duration
+   * metadata in its container (missing Cues), which throws off
+   * both 'ended' timing and any code that trusts video.duration.
+   * Seeking past the end and back is the standard fix: it forces
+   * the browser to walk the file and recompute it properly. Skipped
+   * when the duration already looks sane, since the seek is not
+   * free on a long take.
+   */
+  _fixDuration(video) {
+    if (Number.isFinite(video.duration) && video.duration > 0.5) return Promise.resolve();
+    return new Promise((resolve) => {
+      const onSeeked = () => {
+        video.removeEventListener('seeked', onSeeked);
+        video.currentTime = 0;
+        resolve();
+      };
+      video.addEventListener('seeked', onSeeked);
+      video.currentTime = 1e9;
+      // Some browsers never fire 'seeked' for an out-of-range seek
+      // on a broken-duration file; do not let developing hang on it.
+      setTimeout(resolve, 1500);
+    });
+  }
+
+  /** Render frames until the first real one lands, so the export
+   *  canvas can be sized correctly before captureStream() locks a
+   *  track to it. */
+  _prime() {
+    return new Promise((resolve) => {
+      const attempt = () => {
+        if (this.renderer.render(0)) {
+          this._drawBars();
+          this._blitFrame();
+          resolve();
+        } else {
+          requestAnimationFrame(attempt);
+        }
+      };
+      attempt();
+    });
+  }
+
+  _captureAudioTrack(video) {
+    if (typeof video.captureStream !== 'function') return null;
+    try { return video.captureStream().getAudioTracks()[0] || null; }
+    catch { return null; }
+  }
+
+  /* =============================================================
+     DRIVE — one grade + blit per raw frame, never a bare timer
+     ============================================================= */
+  _startPump() {
+    this._driving = true;
+    const v = this.sourceVideo;
+    if (typeof v.requestVideoFrameCallback === 'function') {
+      const step = (now, meta) => {
+        if (!this._driving) return;
+        this._tick(meta.mediaTime * 1000);
+        this._rvfcHandle = v.requestVideoFrameCallback(step);
+      };
+      this._rvfcHandle = v.requestVideoFrameCallback(step);
+    } else {
+      const step = () => {
+        if (!this._driving) return;
+        this._tick(v.currentTime * 1000);
+        this._rvfcHandle = requestAnimationFrame(step);
+      };
+      this._rvfcHandle = requestAnimationFrame(step);
+    }
+  }
+
+  _stopPump() {
+    this._driving = false;
+    const v = this.sourceVideo;
+    if (typeof v.cancelVideoFrameCallback === 'function') v.cancelVideoFrameCallback(this._rvfcHandle);
+    else cancelAnimationFrame(this._rvfcHandle);
+  }
+
+  _tick(mediaMs) {
+    if (!this.renderer.render(mediaMs)) return;
+    this._blitFrame();
+    this.onProgress?.(Math.min(1, mediaMs / this._durationMs));
+
+    // The authoritative stop signal is the duration the *live*
+    // Recorder measured with its own high-resolution timer when the
+    // take was shot — not this offscreen video's self-reported
+    // duration or its 'ended' event, either of which can be wrong
+    // for a source with imperfect container metadata. 'ended' and
+    // the maxMs timer in _run() remain as backups.
+    if (mediaMs >= this._durationMs) this._finish();
+  }
+
+  /* =============================================================
+     THE SPROCKET FRAME
+     ============================================================= */
+  _drawBars() {
+    const gw = this.renderer.width;
+    const gh = this.renderer.height;
+    if (!gw || !gh) return;
+
+    const bar = Math.round(gw * EXPORT_FRAME.barRatio);
+    this.barHeight = bar;
+    this.exportCanvas.width = gw;
+    this.exportCanvas.height = gh + bar * 2;
+
+    const ctx = this.ctx;
+    ctx.fillStyle = EXPORT_FRAME.barColor;
+    ctx.fillRect(0, 0, gw, gh + bar * 2);
+
+    const n = EXPORT_FRAME.perforations;
+    const cell = gw / n;
+    const pw = cell * EXPORT_FRAME.fillRatio;
+    const ph = bar * EXPORT_FRAME.fillRatio;
+    const r = Math.min(pw, ph) * EXPORT_FRAME.cornerRatio;
+
+    ctx.fillStyle = EXPORT_FRAME.perfColor;
+    for (let row = 0; row < 2; row++) {
+      const cy = row === 0 ? bar / 2 : gh + bar + bar / 2;
+      for (let i = 0; i < n; i++) {
+        const cx = cell * (i + 0.5);
+        roundRectPath(ctx, cx - pw / 2, cy - ph / 2, pw, ph, r);
+        ctx.fill();
+      }
+    }
+
+    this._barsDrawn = true;
+  }
+
+  /** The bars never change once drawn, so only the video window is
+   *  redrawn per frame — the canvas is never cleared. */
+  _blitFrame() {
+    this.ctx.drawImage(this.gradeCanvas, 0, this.barHeight, this.renderer.width, this.renderer.height);
+  }
+
+  _finish() {
+    this._stopPump();
+    this.recorder.stop('done');
+  }
+
+  _onRecorderStop({ blob, mimeType, durationMs }) {
+    const width = this.exportCanvas.width;
+    const height = this.exportCanvas.height;
+    this._cleanup();
+    if (this._cancelled) return;
+    this._resolveFinal?.({ blob, mimeType, durationMs, width, height });
+  }
+
+  /* =============================================================
+     BACKGROUNDING — see main.js. A stalled offscreen video should
+     not spend real encode time on a frozen frame while hidden.
+     ============================================================= */
+  pauseForBackground() {
+    try { this.sourceVideo.pause(); } catch { /* ignore */ }
+    this.recorder.pause();
+  }
+
+  resumeFromBackground() {
+    if (!this.sourceVideo.src) return;
+    this.recorder.resume();
+    this.sourceVideo.play().catch(() => {});
+  }
+
+  /* =============================================================
+     CLEANUP
+     ============================================================= */
+  _cleanup() {
+    this._stopPump();
+    if (this._rawURL) { URL.revokeObjectURL(this._rawURL); this._rawURL = null; }
+    try { this.sourceVideo.pause(); } catch { /* ignore */ }
+    this.sourceVideo.removeAttribute('src');
+    try { this.sourceVideo.load(); } catch { /* ignore */ }
+    if (this.renderer) {
+      try { this.renderer.destroy(); } catch { /* already gone */ }
+      this.renderer = null;
+    }
+    this._barsDrawn = false;
+  }
+
+  /** Abort mid-development — the app backgrounded past recovery, or
+   *  the operator navigated away. */
+  cancel() {
+    this._cancelled = true;
+    try { this.recorder.stop('interrupt'); } catch { /* ignore */ }
+    this._cleanup();
+  }
+}

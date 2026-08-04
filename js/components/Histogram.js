@@ -1,13 +1,16 @@
 /**
  * Histogram.js
  * ---------------------------------------------------------------
- * A live luminance + RGB histogram of the *graded* image.
+ * A live luminance + RGB histogram of whatever is on screen — the
+ * raw camera feed while framing, since there is no live grade to
+ * read any more (see FilmRenderer.js).
  *
- * Reading pixels back from WebGL with readPixels() every frame
- * would stall the GPU pipeline. Instead the graded canvas is
- * drawn into a 64×45 2-D canvas a few times a second and sampled
- * from there: ~2,900 pixels is more than enough for a 64-bucket
- * histogram, and the cost is invisible.
+ * Reading pixels back every frame at full resolution would stall
+ * the pipeline. Instead the source is drawn into a 64×45 2-D canvas
+ * a few times a second and sampled from there: ~2,900 pixels is
+ * more than enough for a 64-bucket histogram, and the cost is
+ * invisible. drawImage() accepts a <canvas> or a <video> alike, so
+ * the source can be either.
  */
 
 const SAMPLE_W = 64;
@@ -50,7 +53,12 @@ export class Histogram {
     if (!this.enabled) return;
     if (now - this._lastAt < this.intervalMs) return;
     this._lastAt = now;
-    if (!this.source.width || !this.source.height) return;
+    // A <video> reports its pixel size on videoWidth/videoHeight,
+    // not width/height (those only reflect HTML attributes); a
+    // <canvas> is the reverse. Read whichever is real.
+    const w = this.source.videoWidth || this.source.width;
+    const h = this.source.videoHeight || this.source.height;
+    if (!w || !h) return;
 
     try {
       this.sctx.drawImage(this.source, 0, 0, SAMPLE_W, SAMPLE_H);

@@ -4,11 +4,13 @@
  * Builds the "Stock & Lab" sheet from a schema so that adding a
  * tunable is a one-line change here, not a new control in HTML.
  *
- * Every slider writes straight into the live LOOK object the
- * renderer already holds, so the viewfinder updates on the next
- * frame with no rebuild and no reload. Values are persisted as a
- * sparse override map — only what the user actually changed — so
- * future revisions of the default negative still reach them.
+ * Every slider writes straight into the live LOOK object, which the
+ * next take's develop pass reads from directly — there is no live
+ * shader to update on the spot any more, so a change here is seen
+ * the next time a take is developed, not while framing. Values are
+ * persisted as a sparse override map — only what the user actually
+ * changed — so future revisions of the default negative still
+ * reach them.
  */
 
 import { el, $, on, toast } from '../utils/dom.js';
@@ -109,7 +111,6 @@ export class Settings {
     for (const [path, value] of Object.entries(this.overrides)) setPath(this.look, path, value);
 
     this.prefs = loadJSON(STORAGE.PREFS_KEY, PREFS);
-    this.look.gate.livePreview = !!this.prefs.gateWeaveLive;
 
     this._build();
     this._bindChrome();
@@ -127,7 +128,7 @@ export class Settings {
       this._segmented('Quality', Object.keys(QUALITY), this.prefs.quality, (v) => {
         this.prefs.quality = v;
         this._savePrefs();
-      }, 'Halation is the expensive pass. Drop a tier if the viewfinder stutters.'),
+      }, 'Halation is the expensive pass. Drop a tier if developing takes too long.'),
 
       this._switch('Live histogram', this.prefs.histogram, (v) => {
         this.prefs.histogram = v; this._savePrefs();
@@ -136,13 +137,6 @@ export class Settings {
       this._switch('Record sound', this.prefs.audio, (v) => {
         this.prefs.audio = v; this._savePrefs();
       }, 'Takes effect the next time the camera opens.'),
-
-      this._switch('Gate movement in viewfinder', this.prefs.gateWeaveLive, (v) => {
-        this.prefs.gateWeaveLive = v;
-        this.look.gate.livePreview = v;
-        this._savePrefs();
-        this.handlers.onLookChange?.(this.look);
-      }, 'Weave and breathing are always present in the recording; this only affects framing.'),
 
       this._switch(
         has.vibrate ? 'Haptics' : 'Haptics (visual tally)',
@@ -258,9 +252,7 @@ export class Settings {
   reset() {
     this.overrides = {};
     clearKey(STORAGE.LOOK_KEY);
-    const livePreview = this.look.gate.livePreview;
     this.look = clone(LOOK);
-    this.look.gate.livePreview = livePreview;
     this._build();
     this.handlers.onLookChange?.(this.look);
     toast('Restored the 70mm reference negative.');

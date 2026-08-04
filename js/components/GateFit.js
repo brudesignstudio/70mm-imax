@@ -18,10 +18,14 @@
  * whole premise of the app is a specific frame ratio.
  */
 
-import { FORMAT } from '../config.js';
+import { FORMAT, EXPORT_ASPECT } from '../config.js';
+
+/** A .stage can opt into a different fixed ratio than the default
+ *  gate — e.g. a developed take's own aspect — via data-ratio. */
+const RATIOS = { export: EXPORT_ASPECT };
 
 export class GateFit {
-  /** @param {number} ratio  target aspect (width ÷ height) */
+  /** @param {number} ratio  default target aspect (width ÷ height) */
   constructor(ratio = FORMAT.ASPECT) {
     this.ratio = ratio;
     this.pairs = [];
@@ -37,10 +41,16 @@ export class GateFit {
     }
   }
 
-  /** Register every .stage / .frame pair in the document. */
+  /** Register every .stage / .frame pair in the document. A stage
+   *  can carry data-ratio="export" (etc, see RATIOS) to fit its
+   *  frame to something other than the default gate aspect. */
   attachAll() {
     this.pairs = Array.from(document.querySelectorAll('.stage'))
-      .map((stage) => ({ stage, frame: stage.querySelector('.frame') }))
+      .map((stage) => ({
+        stage,
+        frame: stage.querySelector('.frame'),
+        ratio: RATIOS[stage.dataset.ratio] || this.ratio,
+      }))
       .filter((p) => p.frame);
     this.pairs.forEach(({ stage }) => this._observer?.observe(stage));
     this.measure();
@@ -48,7 +58,7 @@ export class GateFit {
   }
 
   measure() {
-    for (const { stage, frame } of this.pairs) {
+    for (const { stage, frame, ratio } of this.pairs) {
       // Hidden screens report 0×0; leave them until they are shown.
       const cw = stage.clientWidth;
       const ch = stage.clientHeight;
@@ -59,9 +69,9 @@ export class GateFit {
       const availH = ch - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom);
       if (availW <= 0 || availH <= 0) continue;
 
-      const widthLimited = availW / availH < this.ratio;
-      const w = widthLimited ? availW : availH * this.ratio;
-      const h = widthLimited ? availW / this.ratio : availH;
+      const widthLimited = availW / availH < ratio;
+      const w = widthLimited ? availW : availH * ratio;
+      const h = widthLimited ? availW / ratio : availH;
 
       frame.style.width = `${Math.floor(w)}px`;
       frame.style.height = `${Math.floor(h)}px`;

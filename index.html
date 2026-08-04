@@ -35,7 +35,7 @@
       <h1 class="intro__title" id="intro-title">Large Format Camera</h1>
       <p class="intro__body">
         A digital emulation of 70mm large-format negative.
-        Shot at&nbsp;1:1.43, three minutes to a magazine.
+        Shot at&nbsp;1:1.43, three minutes to a reel.
       </p>
 
       <button class="btn btn--primary" id="btn-begin" type="button">
@@ -58,10 +58,11 @@
     <!-- The gate. Everything the camera "sees" lives inside it. -->
     <div class="stage">
       <div class="frame" id="frame">
-        <!-- Hidden source element; frames are pulled into WebGL each rAF. -->
-        <video id="source" playsinline muted autoplay webkit-playsinline></video>
-        <!-- The graded image. -->
-        <canvas id="preview" class="frame__canvas"></canvas>
+        <!-- The viewfinder: the raw camera feed, shown directly —
+             no shader between the lens and the screen, the same as
+             any other camera page. The film pipeline runs once, on
+             developing, not here. -->
+        <video id="source" class="frame__video" playsinline muted autoplay webkit-playsinline></video>
 
         <!-- Viewfinder furniture -->
         <div class="gate" aria-hidden="true">
@@ -98,12 +99,17 @@
                 <span class="ev__value" id="ev-value">0.0</span>
               </div>
             </div>
+            <div class="zoom" id="zoom" role="group" aria-label="Zoom">
+              <button type="button" data-zoom="0.5" id="btn-zoom-05" aria-pressed="false">0.5×</button>
+              <button type="button" data-zoom="1" aria-pressed="true">1×</button>
+              <button type="button" data-zoom="2" aria-pressed="false">2×</button>
+            </div>
             <canvas class="histogram" id="histogram" width="128" height="48" aria-label="Live histogram"></canvas>
           </div>
         </div>
 
-        <!-- Magazine progress: a thin line that fills across 3 minutes -->
-        <div class="magazine" aria-hidden="true"><i id="magazine-fill"></i></div>
+        <!-- Reel progress: a thin line that fills across 3 minutes -->
+        <div class="reel" aria-hidden="true"><i id="reel-fill"></i></div>
       </div>
     </div>
 
@@ -152,10 +158,15 @@
        PROCESSING
        ══════════════════════════════════════════════════════════════ -->
   <section class="screen screen--processing" id="screen-processing" aria-label="Processing">
+    <!-- The actual developed frame, live, as it comes off the pass. -->
+    <div class="stage" data-ratio="export">
+      <div class="frame" id="develop-frame"></div>
+    </div>
     <div class="processing__inner">
       <div class="processing__reel" aria-hidden="true"><i></i><i></i><i></i></div>
       <p class="processing__label">Developing</p>
-      <p class="processing__sub" id="processing-sub">Fixing the negative…</p>
+      <p class="processing__sub" id="processing-sub">Developing…</p>
+      <div class="processing__bar"><i id="processing-progress"></i></div>
     </div>
   </section>
 
@@ -163,15 +174,12 @@
        PLAYBACK
        ══════════════════════════════════════════════════════════════ -->
   <section class="screen screen--playback" id="screen-playback" aria-label="Playback">
-    <div class="stage">
+    <div class="stage" data-ratio="export">
       <div class="frame frame--playback">
+        <!-- The recorded file already carries the sprocket frame in
+             its own pixels, so there is no decorative .gate overlay
+             here — the picture is the framing furniture now. -->
         <video id="player" class="frame__video" playsinline webkit-playsinline></video>
-        <div class="gate" aria-hidden="true">
-          <span class="gate__mark gate__mark--tl"></span>
-          <span class="gate__mark gate__mark--tr"></span>
-          <span class="gate__mark gate__mark--bl"></span>
-          <span class="gate__mark gate__mark--br"></span>
-        </div>
         <div class="hud hud--playback">
           <div class="hud__row hud__row--top">
             <span class="hud__timer" id="pb-time">00:00</span>
@@ -210,7 +218,7 @@
        ══════════════════════════════════════════════════════════════ -->
   <section class="screen screen--gallery" id="screen-gallery" aria-label="Gallery">
     <header class="sheet__head">
-      <h2 class="sheet__title">Magazines</h2>
+      <h2 class="sheet__title">Reels</h2>
       <button class="text-btn" id="btn-gallery-close" type="button">Close</button>
     </header>
     <div class="gallery" id="gallery-list"></div>

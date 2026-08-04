@@ -1,7 +1,7 @@
 /**
  * Gallery.js
  * ---------------------------------------------------------------
- * The shelf of exposed magazines, persisted in IndexedDB so takes
+ * The shelf of exposed reels, persisted in IndexedDB so takes
  * survive a reload, an app-switch, or an offline session.
  *
  * Thumbnails are stored as JPEG blobs captured from the graded

@@ -127,6 +127,34 @@ export function createVideoTexture(gl) {
   return texture;
 }
 
+/**
+ * A tileable RGB noise texture, generated once on the CPU and
+ * uploaded a single time. The composite shader samples it instead
+ * of computing three sin()-hash calls per pixel per frame — a
+ * texture fetch is dramatically cheaper on a mobile GPU than three
+ * transcendental calls, and the pattern only needs to *look* like
+ * it re-rolls every frame, which the per-frame UV offset (see
+ * FilmRenderer) already provides on top of a static texture.
+ * REPEAT + NEAREST: it must tile seamlessly and stay crisp per texel.
+ */
+export function createGrainTexture(gl, size = 128) {
+  const data = new Uint8Array(size * size * 4);
+  for (let i = 0; i < size * size; i++) {
+    data[i * 4 + 0] = (Math.random() * 256) | 0;
+    data[i * 4 + 1] = (Math.random() * 256) | 0;
+    data[i * 4 + 2] = (Math.random() * 256) | 0;
+    data[i * 4 + 3] = 255;
+  }
+  const texture = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, texture);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, size, size, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  return texture;
+}
+
 export function bindTexture(gl, texture, unit, location) {
   gl.activeTexture(gl.TEXTURE0 + unit);
   gl.bindTexture(gl.TEXTURE_2D, texture);

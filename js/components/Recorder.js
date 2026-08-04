@@ -1,16 +1,16 @@
 /**
  * Recorder.js
  * ---------------------------------------------------------------
- * Records the *graded* canvas, not the raw camera.
+ * MediaRecorder over an arbitrary video source, described by a
+ * small adapter: `{ supported, getStream(fps) }`.
  *
- * canvas.captureStream() gives a live video track fed by whatever
- * the renderer last drew, so the file and the viewfinder are
- * guaranteed identical — there is no export-time re-grade, and a
- * 3-minute take costs nothing beyond the encode that was already
- * happening.
- *
- * The audio track is taken straight from getUserMedia and merged
- * into the same MediaStream so the container carries both.
+ * Two adapters use this in the app: one wraps the raw camera
+ * MediaStream (shooting — zero rendering cost, closest thing to the
+ * stock Camera app), the other wraps the compositor canvas that
+ * developing draws the graded, sprocketed frame onto. Same class,
+ * same 3-minute enforcement, same finalise path, because both are
+ * fundamentally "record whatever this source is producing right
+ * now" — see utils for the two adapters.
  *
  * The 3-minute limit is enforced two ways: a timer, and a check on
  * every progress tick. Timers on mobile are throttled aggressively
@@ -23,11 +23,14 @@ import { pickMimeType } from '../utils/capabilities.js';
 
 export class Recorder {
   /**
-   * @param {HTMLCanvasElement} canvas   the graded output canvas
-   * @param {object} handlers            { onTick, onStop, onError, onStart }
+   * @param {{ supported?: boolean, stopTracksOnFinish?: boolean, getStream: (fps:number) => MediaStream }} source
+   *   stopTracksOnFinish defaults true (correct for a canvas capture
+   *   track); the raw-camera adapter sets it false so finishing a
+   *   recording does not stop the live camera track.
+   * @param {object} handlers   { onTick, onStop, onError, onStart }
    */
-  constructor(canvas, handlers = {}) {
-    this.canvas = canvas;
+  constructor(source, handlers = {}) {
+    this.source = source;
     this.handlers = handlers;
 
     this.recorder = null;
@@ -47,8 +50,7 @@ export class Recorder {
 
   /** True if this browser can produce a file at all. */
   get supported() {
-    return typeof MediaRecorder !== 'undefined' &&
-           typeof this.canvas.captureStream === 'function';
+    return typeof MediaRecorder !== 'undefined' && this.source.supported !== false;
   }
 
   /** MP4 is the only container iOS will accept into Photos. */
@@ -57,21 +59,21 @@ export class Recorder {
   /* =============================================================
      START
      ============================================================= */
-  async start({ audioTrack = null, fps = 30 } = {}) {
+  async start({ audioTrack = null, fps = 30, videoBitsPerSecond = RECORDING.VIDEO_BPS, maxMs = RECORDING.MAX_MS } = {}) {
     if (this.state !== 'idle') return false;
-    if (!this.supported) throw new Error('This browser cannot record video from a canvas.');
+    if (!this.supported) throw new Error('This browser cannot record this source.');
 
-    // Capture at the cadence we render at. Passing an fps argument
-    // (rather than 0) makes the track pull frames on a fixed clock,
-    // which keeps the encoder's timebase stable even if a rAF is
-    // dropped — critical for a take that runs three minutes.
-    const canvasStream = this.canvas.captureStream(fps);
+    // fps is only meaningful to a canvas source (captureStream pulls
+    // frames on a fixed clock rather than only on draw calls, which
+    // keeps the encoder's timebase stable even if a frame is
+    // dropped); a live MediaStream source ignores it.
+    const sourceStream = this.source.getStream(fps);
     this.stream = new MediaStream();
-    canvasStream.getVideoTracks().forEach((t) => this.stream.addTrack(t));
+    sourceStream.getVideoTracks().forEach((t) => this.stream.addTrack(t));
     if (audioTrack && audioTrack.readyState === 'live') this.stream.addTrack(audioTrack);
 
     const options = {
-      videoBitsPerSecond: RECORDING.VIDEO_BPS,
+      videoBitsPerSecond,
       audioBitsPerSecond: RECORDING.AUDIO_BPS,
     };
     if (this.mimeType) options.mimeType = this.mimeType;
@@ -86,6 +88,7 @@ export class Recorder {
 
     this.chunks = [];
     this._stopReason = null;
+    this._maxMs = maxMs;
 
     this.recorder.ondataavailable = (e) => {
       if (e.data && e.data.size > 0) this.chunks.push(e.data);
@@ -103,7 +106,7 @@ export class Recorder {
     this.elapsed = 0;
 
     // Belt: a timer for the normal case.
-    this._limitTimer = setTimeout(() => this.stop('limit'), RECORDING.MAX_MS);
+    this._limitTimer = setTimeout(() => this.stop('limit'), this._maxMs);
     // Braces: a tick that also enforces the ceiling, because mobile
     // browsers throttle timers in backgrounded tabs.
     this._tick();
@@ -115,8 +118,8 @@ export class Recorder {
   _tick = () => {
     if (this.state !== 'recording') return;
     this.elapsed = performance.now() - this.startedAt;
-    if (this.elapsed >= RECORDING.MAX_MS) {
-      this.elapsed = RECORDING.MAX_MS;
+    if (this.elapsed >= this._maxMs) {
+      this.elapsed = this._maxMs;
       this.handlers.onTick?.(this.elapsed);
       this.stop('limit');
       return;
@@ -140,7 +143,7 @@ export class Recorder {
     if (this.state !== 'recording') return false;
     this.state = 'stopping';
     this._stopReason = reason;
-    this.elapsed = Math.min(performance.now() - this.startedAt, RECORDING.MAX_MS);
+    this.elapsed = Math.min(performance.now() - this.startedAt, this._maxMs);
     this._cancelClocks();
     try {
       this.recorder.requestData?.();
@@ -161,9 +164,16 @@ export class Recorder {
     this.chunks = [];
     this.state = 'idle';
 
-    // Release the canvas capture track; the camera stream itself
-    // stays live so the operator can shoot again immediately.
-    this.stream?.getVideoTracks().forEach((t) => t.stop());
+    // A canvas.captureStream() track is ours alone — ephemeral,
+    // created fresh per recording — so it is safe and correct to
+    // stop it here. A raw camera track is *not* ours: it is the
+    // same live track the camera adapter keeps handing out, and
+    // stopping it here would kill the viewfinder along with it. The
+    // adapter says which case this is; canvas sources default to
+    // "yes, stop it" since that was every existing call site.
+    if (this.source.stopTracksOnFinish !== false) {
+      this.stream?.getVideoTracks().forEach((t) => t.stop());
+    }
     this.stream = null;
     this.recorder = null;
 
@@ -178,5 +188,24 @@ export class Recorder {
   /** Called when the page is hidden mid-take. */
   interruptIfRecording() {
     if (this.isRecording) this.stop('interrupt');
+  }
+
+  /**
+   * Pause/resume the underlying encoder — used by the develop pass
+   * when the app backgrounds, so a stalled offscreen video does not
+   * spend minutes of encode time on a frozen frame. Live shooting
+   * never calls this; a backgrounded take is stopped outright there
+   * because the OS actually suspends the camera.
+   */
+  pause() {
+    if (this.state === 'recording' && this.recorder?.state === 'recording') {
+      try { this.recorder.pause(); } catch { /* not supported: keep recording */ }
+    }
+  }
+
+  resume() {
+    if (this.state === 'recording' && this.recorder?.state === 'paused') {
+      try { this.recorder.resume(); } catch { /* ignore */ }
+    }
   }
 }

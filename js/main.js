@@ -7,22 +7,24 @@
  *                            ↑                               │
  *                            └───────────────────────────────┘
  *
- * There is exactly one rAF loop in the app. It renders the film
- * pipeline, feeds the histogram, and nothing else — recording is
- * driven off the canvas by captureStream(), so a dropped frame in
- * the UI never desynchronises the file.
+ * The camera screen runs no render loop at all: the viewfinder is
+ * the raw <video> element, shown directly, so shooting costs the
+ * browser nothing beyond decoding the camera feed — the same as any
+ * other camera page. The film pipeline runs exactly once per take,
+ * during "processing" — see components/Developer.js.
  */
 
-import { FORMAT, RECORDING, GATE_ORIENTATION, ROTATE_PROMPT } from './config.js';
-import { $, on, toast } from './utils/dom.js';
+import { FORMAT, RECORDING, GATE_ORIENTATION, ROTATE_PROMPT, ZOOM } from './config.js';
+import { $, $$, on, toast } from './utils/dom.js';
 import { clock, clamp } from './utils/format.js';
 import { has, isSecure, isIOS, report, pickMimeType } from './utils/capabilities.js';
 import { haptic, setHapticsEnabled } from './utils/haptics.js';
 import { putTake, deleteTake, storageEstimate } from './utils/storage.js';
 
 import { CameraManager } from './components/CameraManager.js';
-import { FilmRenderer } from './components/FilmRenderer.js';
+import { coverCrop } from './components/FilmRenderer.js';
 import { Recorder } from './components/Recorder.js';
+import { Developer } from './components/Developer.js';
 import { OrientationGuard } from './components/OrientationGuard.js';
 import { Histogram } from './components/Histogram.js';
 import { Playback } from './components/Playback.js';
@@ -34,22 +36,22 @@ class App {
   constructor() {
     this.app = $('#app');
     this.source = $('#source');
-    this.canvas = $('#preview');
 
     this.screen = null;   // set by show(); starts null so the first
                           // show('intro') is not treated as a no-op
     this.wakeLock = null;
-    this.rafId = 0;
     this.pendingTake = null;
     this.evPath = 'hardware';
+    this.zoomLevel = ZOOM.default;
+    this._digitalZoomFactor = 1;   // baked into the develop pass; see setZoomLevel
+    this.developer = null;         // the in-flight Developer, if any
 
     this.settings = new Settings({
-      onLookChange: (look) => this.renderer?.setLook(look),
+      onLookChange: () => {},   // the grade only applies at develop time now
       onPrefsChange: (prefs) => this.applyPrefs(prefs),
     });
 
     this.camera = new CameraManager();
-    this.renderer = null;
     this.recorder = null;
     this.histogram = null;
 
@@ -59,6 +61,10 @@ class App {
     $('.rotate__text').textContent = ROTATE_PROMPT;
     $('#tag-format').textContent = `${FORMAT.LABEL} · 70MM`;
     $('#pb-meta').textContent = `${FORMAT.LABEL} · 70MM`;
+
+    // iOS Safari on iPhone implements no Fullscreen API for
+    // arbitrary elements, so there is nothing for the button to do.
+    $('#btn-fullscreen').hidden = !has.fullscreen;
 
     this.gateFit = new GateFit().attachAll();
     this.orientation = new OrientationGuard((o) => this.onOrientation(o), GATE_ORIENTATION);
@@ -133,7 +139,7 @@ class App {
   bind() {
     on($('#btn-begin'), 'click', () => this.begin());
     on($('#btn-record'), 'click', () => this.toggleRecord());
-    on($('#btn-settings'), 'click', () => this.settings.open());
+    on($('#btn-settings'), 'click', () => { this.settings.open(); this.updateReadout(); });
     on($('#btn-fullscreen'), 'click', () => this.toggleFullscreen());
 
     on($('#btn-gallery'), 'click', async () => {
@@ -155,36 +161,37 @@ class App {
     on($('#btn-ae'), 'click', (e) => this.toggleLock(e.currentTarget, 'exposure'));
     on($('#btn-awb'), 'click', (e) => this.toggleLock(e.currentTarget, 'whiteBalance'));
 
+    for (const btn of $$('#zoom button')) {
+      on(btn, 'click', () => this.setZoomLevel(parseFloat(btn.dataset.zoom)));
+    }
+
     /* --- lifecycle ------------------------------------------- */
     // A backgrounded tab has its camera suspended by the OS; a take
     // that continues would record frozen frames, so we close it out.
+    // Developing is not camera-bound, so it is paused instead.
     on(document, 'visibilitychange', () => {
       if (document.hidden) {
         if (this.recorder?.isRecording) {
           this.recorder.stop('interrupt');
           toast('Recording stopped — the app went to the background.');
         }
+        this.developer?.pauseForBackground();
         this.releaseWakeLock();
-      } else if (this.screen === 'camera') {
-        this.requestWakeLock();
-        this.source?.play?.().catch(() => {});
-        // The OS cuts the LED when the camera is suspended, so the
-        // torch has to be re-asserted or the button would lie.
-        if (this.torchOn) this.camera.setTorch(true).catch(() => {});
+      } else {
+        if (this.screen === 'camera') {
+          this.requestWakeLock();
+          this.source?.play?.().catch(() => {});
+          // The OS cuts the LED when the camera is suspended, so the
+          // torch has to be re-asserted or the button would lie.
+          if (this.torchOn) this.camera.setTorch(true).catch(() => {});
+        }
+        if (this.screen === 'processing') this.developer?.resumeFromBackground();
       }
     });
 
-    on(window, 'pagehide', () => this.recorder?.interruptIfRecording());
-
-    // WebGL contexts are evicted under memory pressure on mobile.
-    on(this.canvas, 'webglcontextlost', (e) => {
-      e.preventDefault();
-      toast('Graphics context lost — reloading the viewfinder.');
+    on(window, 'pagehide', () => {
       this.recorder?.interruptIfRecording();
-    });
-    on(this.canvas, 'webglcontextrestored', () => {
-      try { this.rebuildRenderer(); }
-      catch { toast('The viewfinder could not be restored — please reload.'); }
+      this.developer?.cancel();
     });
   }
 
@@ -201,27 +208,36 @@ class App {
 
       this.source.srcObject = stream;
       this.source.muted = true;             // never monitor: instant feedback loop
+      this.source.style.transform = '';
       await this.source.play().catch(() => {});
 
-      this.rebuildRenderer();
+      this.recorder = new Recorder(
+        { getStream: () => this.camera.stream, stopTracksOnFinish: false },
+        {
+          onStart: () => this.onRecordStart(),
+          onTick: (ms) => this.onRecordTick(ms),
+          onStop: (raw) => this.onRawRecordStop(raw),
+          onError: (err) => {
+            this.setRecordingUI(false);
+            toast(err.message || 'Recording failed.');
+          },
+        }
+      );
 
-      this.recorder = new Recorder(this.canvas, {
-        onStart: () => this.onRecordStart(),
-        onTick: (ms) => this.onRecordTick(ms),
-        onStop: (result) => this.onRecordStop(result),
-        onError: (err) => {
-          this.setRecordingUI(false);
-          toast(err.message || 'Recording failed.');
-        },
-      });
+      this.histogram ??= new Histogram($('#histogram'), this.source);
+      this.histogram.setEnabled(this.settings.prefs.histogram);
 
-      this.configureCameraControls();
+      this.zoomLevel = ZOOM.default;
+      this._digitalZoomFactor = 1;
+      this.updateZoomUI();
+
+      await this.configureCameraControls();
       this.applyPrefs(this.settings.prefs);
       await this.gallery.refresh();
 
       this.show('camera');
       this.requestWakeLock();
-      this.startLoop();
+      this.startHudLoop();
       this.updateShutterState();
       this.warnIfStorageTight();
     } catch (err) {
@@ -232,30 +248,9 @@ class App {
     }
   }
 
-  /**
-   * Build the renderer, or re-point the existing one at a new
-   * source. A canvas only ever yields one WebGL context, so an
-   * intact renderer is always reused — a fresh FilmRenderer is
-   * only built on first run or after a genuine context loss.
-   */
-  rebuildRenderer() {
-    if (this.renderer && !this.renderer.isLost) {
-      this.renderer.setSource(this.source);
-      this.renderer.setLook(this.settings.look);
-      this.renderer.setQuality(this.settings.prefs.quality);
-    } else {
-      try { this.renderer?.destroy?.(); } catch { /* already gone */ }
-      this.renderer = new FilmRenderer(this.canvas, this.settings.look);
-      this.renderer.setSource(this.source);
-      this.renderer.setQuality(this.settings.prefs.quality);
-    }
-    this.histogram ??= new Histogram($('#histogram'), this.canvas);
-    this.histogram.setEnabled(this.settings.prefs.histogram);
-    if (!this.rafId) this.startLoop();
-  }
-
-  /** Show only the controls this platform can actually honour. */
-  configureCameraControls() {
+  /** Show only the controls this platform (and this lens) can
+   *  actually honour. Re-run after every lens switch, not just once. */
+  async configureCameraControls() {
     const s = this.camera.supports;
     $('#btn-ae').hidden = !s.exposureMode;
     $('#btn-awb').hidden = !s.whiteBalanceMode;
@@ -272,19 +267,15 @@ class App {
       ? 'Sensor exposure compensation'
       : 'Digital exposure (this browser does not expose sensor exposure control)';
 
-  }
-
-  /** The gate size is only known after the first frame is sized. */
-  updateFormatTag() {
-    const w = this.renderer?.width;
-    if (!w || w === this._taggedWidth) return;
-    this._taggedWidth = w;
-    $('#tag-format').textContent = `${FORMAT.LABEL} · ${w}×${this.renderer.height}`;
+    // 0.5× only exists where there is a genuine ultra-wide lens to
+    // switch to — iOS reports one synthetic rear device, so this
+    // stays hidden there rather than pretending.
+    const half = $('#btn-zoom-05');
+    if (half) half.hidden = !(await this.camera.findUltrawideDevice());
   }
 
   applyPrefs(prefs) {
     setHapticsEnabled(prefs.haptics);
-    this.renderer?.setQuality(prefs.quality);
     this.histogram?.setEnabled(prefs.histogram);
   }
 
@@ -294,43 +285,32 @@ class App {
     const free = est.quota - (est.usage || 0);
     // A 3-minute take at 12 Mbps is roughly 270 MB.
     if (free < 400 * 1024 * 1024) {
-      toast('Storage is low — a full three-minute magazine may not fit.', 4200);
+      toast('Storage is low — a full three-minute reel may not fit.', 4200);
     }
   }
 
   /* =============================================================
-     RENDER LOOP
+     HUD LOOP — histogram sampling + the settings readout, both
+     already self-throttled internally. Not a render loop: nothing
+     here touches the picture, so there is no per-frame GPU cost to
+     pause. It still steps aside when hidden, on principle.
      ============================================================= */
-  startLoop() {
-    if (this.rafId) return;
-    const tick = (now) => {
-      this.rafId = requestAnimationFrame(tick);
-      if (!this.renderer) return;
-      if (this.renderer.render(now)) {
-        this.histogram?.update(now);
-        this.updateFormatTag();
-        if (this.settings.isOpen) this.updateReadout();
-      }
-    };
-    this.rafId = requestAnimationFrame(tick);
-  }
-
-  stopLoop() {
-    cancelAnimationFrame(this.rafId);
-    this.rafId = 0;
+  startHudLoop() {
+    if (this._hudTimer) return;
+    this._hudTimer = setInterval(() => {
+      if (document.hidden || this.screen !== 'camera') return;
+      this.histogram?.update();
+      if (this.settings.isOpen) this.updateReadout();
+    }, 160);
   }
 
   updateReadout() {
-    if (!this._readoutAt || performance.now() - this._readoutAt > 500) {
-      this._readoutAt = performance.now();
-      const r = this.camera.resolution;
-      this.settings.setReadout(
-        `Sensor ${r.width}×${r.height} @ ${r.frameRate}fps · ` +
-        `Gate ${this.renderer.width}×${this.renderer.height} · ` +
-        `${this.renderer.fps}fps render · ` +
-        `EV path: ${this.evPath}`
-      );
-    }
+    const r = this.camera.resolution;
+    this.settings.setReadout(
+      `Sensor ${r.width}×${r.height} @ ${r.frameRate}fps · ` +
+      `Zoom ${this.zoomLevel}× · ` +
+      `EV path: ${this.evPath}`
+    );
   }
 
   /* =============================================================
@@ -357,7 +337,7 @@ class App {
   updateShutterState() {
     const btn = $('#btn-record');
     const ready = !!this.orientation?.isReady &&
-                  !!this.renderer &&
+                  !!this.camera?.videoTrack &&
                   !!this.recorder?.supported;
     btn.disabled = !ready;
     btn.setAttribute('aria-label',
@@ -391,6 +371,7 @@ class App {
       await this.recorder.start({
         audioTrack: this.settings.prefs.audio ? this.camera.audioTrack : null,
         fps: FORMAT.FPS,
+        videoBitsPerSecond: RECORDING.RAW_VIDEO_BPS,
       });
     } catch (err) {
       toast(err.message || 'Recording could not start.');
@@ -400,9 +381,6 @@ class App {
   onRecordStart() {
     haptic('start');
     this.setRecordingUI(true);
-    // The film moving through the gate belongs in the recording, so
-    // gate mechanics switch on for the duration of the take.
-    this.renderer.setGateLive(true);
     this.onRecordTick(0);
   }
 
@@ -412,26 +390,26 @@ class App {
     $('#remaining').textContent = clock(remaining);
 
     const pct = clamp(ms / RECORDING.MAX_MS, 0, 1);
-    $('#magazine-fill').style.width = `${pct * 100}%`;
+    $('#reel-fill').style.width = `${pct * 100}%`;
     // 283 ≈ the circumference of the r=45 progress ring.
     $('#shutter-progress').style.strokeDashoffset = String(283 * (1 - pct));
 
-    // A short warning as the magazine runs out.
+    // A short warning as the reel runs out.
     if (remaining <= 10_000 && !this._warnedEnd) {
       this._warnedEnd = true;
       haptic('tick');
-      toast('Ten seconds of magazine left.', 2000);
+      toast('Ten seconds of reel left.', 2000);
     }
   }
 
-  async onRecordStop({ blob, mimeType, durationMs, reason }) {
+  /** The raw take is done; developing turns it into the real one. */
+  async onRawRecordStop({ blob, durationMs, reason }) {
     this.setRecordingUI(false);
-    this.renderer.setGateLive(this.settings.prefs.gateWeaveLive);
     this._warnedEnd = false;
     haptic(reason === 'limit' ? 'limit' : 'stop');
     this.orientation.unlock();
 
-    if (reason === 'limit') toast('Magazine complete — three minutes exposed.');
+    if (reason === 'limit') toast('Reel complete — three minutes exposed.');
 
     if (!blob || blob.size < 1024) {
       toast('That take came back empty. Try again.');
@@ -439,27 +417,59 @@ class App {
     }
 
     this.show('processing');
-    $('#processing-sub').textContent = 'Fixing the negative…';
+    await this.developTake({ blob, durationMs });
+  }
 
-    // Thumbnail comes from the live canvas, which still holds the
-    // last graded frame of the take.
-    const thumb = await captureThumbnail(this.canvas);
+  async developTake(rawTake) {
+    const sub = $('#processing-sub');
+    const progress = $('#processing-progress');
+    sub.textContent = 'Developing…';
+    progress.style.width = '0%';
+
+    const developer = new Developer({
+      look: this.settings.look,
+      quality: this.settings.prefs.quality,
+      digitalZoom: this._digitalZoomFactor,
+      onProgress: (f) => {
+        const pct = Math.round(f * 100);
+        progress.style.width = `${pct}%`;
+        sub.textContent = `Developing… ${pct}%`;
+      },
+    });
+    this.developer = developer;
+
+    developer.exportCanvas.className = 'frame__canvas';
+    $('#develop-frame').replaceChildren(developer.exportCanvas);
+    requestAnimationFrame(() => this.gateFit.measure());
+
+    let result;
+    try {
+      result = await developer.develop(rawTake);
+    } catch (err) {
+      this.developer = null;
+      toast(err.message || 'Developing failed — the raw take could not be processed.');
+      this.showCamera();
+      return;
+    }
+
+    sub.textContent = 'Filing the reel…';
+    const thumb = await captureThumbnail(developer.exportCanvas);
+    this.developer = null;
 
     const take = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       ts: Date.now(),
-      blob,
-      mimeType,
-      durationMs,
-      width: this.renderer.width,
-      height: this.renderer.height,
+      blob: result.blob,
+      mimeType: result.mimeType,
+      durationMs: result.durationMs,
+      width: result.width,
+      height: result.height,
       thumb,
     };
 
     // Persist, but never lose the take if the quota rejects it —
     // the operator can still review and save it from memory.
     try {
-      $('#processing-sub').textContent = 'Filing the magazine…';
       await putTake(take);
       await this.gallery.refresh();
     } catch {
@@ -475,7 +485,7 @@ class App {
     if (!on) {
       $('#timer').textContent = '00:00';
       $('#remaining').textContent = clock(RECORDING.MAX_MS);
-      $('#magazine-fill').style.width = '0%';
+      $('#reel-fill').style.width = '0%';
       $('#shutter-progress').style.strokeDashoffset = '283';
     }
   }
@@ -516,7 +526,8 @@ class App {
   /**
    * Tap-to-focus. The tap is in gate coordinates; the sensor is
    * larger than the gate, so the point has to be mapped back
-   * through the crop before the constraint means anything.
+   * through the same crop the viewfinder's object-fit: cover is
+   * already doing visually, before the constraint means anything.
    */
   async focusAt(event) {
     if (this.screen !== 'camera' || !this.orientation.isReady) return;
@@ -536,15 +547,19 @@ class App {
     reticle.classList.add('is-active');
     haptic('tick');
 
-    const [sx, sy, ox, oy] = this.renderer.crop;
+    const vw = this.source.videoWidth;
+    const vh = this.source.videoHeight;
+    if (!vw || !vh) return;
+    const [sx, sy, ox, oy] = coverCrop(vw, vh, FORMAT.ASPECT);
     const point = { x: ox + gx * sx, y: oy + gy * sy };
 
     const res = await this.camera.focusAt(point.x, point.y);
-    if (!res.ok && res.reason === 'unsupported' && !this._focusWarned) {
+    // iOS Safari never exposes manual focus; the reticle above is
+    // the only feedback there, on purpose — not a limitation worth
+    // interrupting the operator to explain every time.
+    if (!res.ok && res.reason === 'unsupported' && !this._focusWarned && !isIOS) {
       this._focusWarned = true;
-      toast(isIOS
-        ? 'iOS Safari does not expose manual focus to web pages — the camera stays on continuous autofocus.'
-        : 'This camera does not expose focus control to the browser.', 4000);
+      toast('This camera does not expose focus control to the browser.', 4000);
     }
   }
 
@@ -552,11 +567,13 @@ class App {
    * Exposure compensation, hardware where possible.
    *
    * On iOS Safari the sensor constraint does not exist, so the same
-   * number is applied as a linear-light gain before the tone curve
-   * instead. It is not identical — a real stop changes what the
-   * sensor collects — but applied pre-curve it rolls off through
-   * the same shoulder rather than clipping, which is far closer
-   * than a post-hoc brightness slider.
+   * number is stored as a linear-light gain and applied before the
+   * tone curve the next time a take is developed instead. It is not
+   * identical — a real stop changes what the sensor collects — but
+   * applied pre-curve it rolls off through the same shoulder rather
+   * than clipping, which is far closer than a post-hoc brightness
+   * slider. There is no live preview of it any more, the same way
+   * there is no live preview of anything else in the grade.
    */
   async setExposure(stops) {
     $('#ev-value').textContent = `${stops > 0 ? '+' : ''}${stops.toFixed(1)}`;
@@ -568,7 +585,6 @@ class App {
     } else {
       this.evPath = 'digital';
       this.settings.look.exposure.ev = stops;
-      this.renderer?.setLook(this.settings.look);
     }
   }
 
@@ -583,8 +599,8 @@ class App {
    * camera wants a continuous light source, not a pop.
    *
    * The button stays visible where torch is unsupported, struck
-   * through, and says why when tapped, rather than vanishing and
-   * leaving the operator wondering where the flash went.
+   * through, rather than vanishing and leaving the operator
+   * wondering where the flash went.
    */
   async toggleTorch() {
     const button = $('#btn-torch');
@@ -593,9 +609,7 @@ class App {
     const res = await this.camera.setTorch(next);
     if (!res.ok) {
       button.classList.add('is-unavailable');
-      toast(isIOS
-        ? 'iOS Safari does not give web pages control of the flash. Only a native app can light the LED.'
-        : 'This camera does not expose its flash to the browser.', 4200);
+      if (!isIOS) toast('This camera does not expose its flash to the browser.', 4200);
       return;
     }
 
@@ -621,6 +635,67 @@ class App {
     toast(`${kind === 'exposure' ? 'Exposure' : 'White balance'} ${next ? 'locked' : 'unlocked'}.`, 1400);
   }
 
+  /**
+   * Zoom. 0.5× is a genuine lens switch (only where one exists); 1×
+   * and 2× both live on the main lens, 2× via the hardware `zoom`
+   * constraint where the browser exposes one, else a CSS scale for
+   * live framing with the same factor baked into the actual crop
+   * when the take is developed (see Developer.js / FilmRenderer).
+   *
+   * Locked during a take: a lens switch would swap the MediaStream
+   * track out from under a live MediaRecorder, and there is no
+   * frame-accurate way to vary the digital fallback's baked-in crop
+   * partway through a single develop pass.
+   */
+  async setZoomLevel(level) {
+    if (this.recorder?.isRecording) return;
+    if (level === this.zoomLevel) return;
+
+    if (level === 0.5) {
+      const res = await this.camera.openUltrawide();
+      if (!res.ok) return;
+      this.source.srcObject = this.camera.stream;
+      await this.source.play().catch(() => {});
+      this.source.style.transform = '';
+      this._digitalZoomFactor = 1;
+      await this.configureCameraControls();
+    } else {
+      if (this.camera.lens !== 'main') {
+        const res = await this.camera.openMain();
+        if (res.ok) {
+          this.source.srcObject = this.camera.stream;
+          await this.source.play().catch(() => {});
+          await this.configureCameraControls();
+        }
+      }
+      if (level === 1) {
+        if (this.camera.supports.zoom) await this.camera.setZoom(1);
+        this.source.style.transform = '';
+        this._digitalZoomFactor = 1;
+      } else {
+        const res = this.camera.supports.zoom ? await this.camera.setZoom(2) : { ok: false };
+        if (res.ok) {
+          this.source.style.transform = '';
+          this._digitalZoomFactor = 1;
+        } else {
+          this.source.style.transform = 'scale(2)';
+          this._digitalZoomFactor = 2;
+        }
+      }
+    }
+
+    this.zoomLevel = level;
+    this.updateZoomUI();
+    this.updateReadout();
+    haptic('tick');
+  }
+
+  updateZoomUI() {
+    for (const btn of $$('#zoom button')) {
+      btn.setAttribute('aria-pressed', parseFloat(btn.dataset.zoom) === this.zoomLevel ? 'true' : 'false');
+    }
+  }
+
   /* =============================================================
      FULLSCREEN + WAKE LOCK
      ============================================================= */
@@ -629,7 +704,8 @@ class App {
     // for arbitrary elements — only <video>. Installing the PWA to
     // the home screen is the supported way to get a full-bleed,
     // chrome-free camera there, which is why the manifest sets
-    // display: fullscreen.
+    // display: fullscreen, and why the button is hidden there
+    // rather than shown failing.
     const target = document.documentElement;
     const request = target.requestFullscreen || target.webkitRequestFullscreen;
     if (!request || document.fullscreenElement) return false;
@@ -645,13 +721,7 @@ class App {
       return;
     }
     const ok = await this.enterFullscreen().catch(() => false);
-    if (!ok) {
-      toast(isIOS
-        ? 'iOS does not allow full screen here. Add 70MM to your Home Screen for a full-bleed viewfinder.'
-        : 'Full screen is unavailable in this browser.', 4200);
-    } else {
-      this.orientation.lock();
-    }
+    if (ok) this.orientation.lock();
   }
 
   async requestWakeLock() {

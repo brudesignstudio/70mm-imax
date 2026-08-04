@@ -1,14 +1,18 @@
 /**
  * FilmRenderer.js
  * ---------------------------------------------------------------
- * The optical bench. Takes a <video> element (the live camera) and
- * renders a graded frame, cropped to FORMAT.ASPECT, into a
- * WebGL canvas.
+ * The optical bench. Takes a <video> element and renders a graded
+ * frame, cropped to FORMAT.ASPECT, into a WebGL canvas.
  *
- * That canvas is *both* the viewfinder and the recording source —
- * captureStream() is attached to it — so what the operator sees is
- * exactly what is written to the file. There is no second grade at
- * export time and no chance of preview/record drift.
+ * This never runs live: shooting records the raw camera stream
+ * untouched (see Recorder + main.js) so the viewfinder stays as
+ * close to a stock camera app as a web page gets — no shader, no
+ * heat, no lag. The grade happens exactly once, during developing,
+ * fed by an offscreen <video> replaying the raw take (Developer.js
+ * drives it frame-by-frame). What comes out of this bench is what
+ * gets re-encoded, so there is still no drift between what the
+ * operator reviews and what gets saved — it is just produced once,
+ * after the fact, instead of live.
  *
  * Everything constant across a frame is computed here on the CPU
  * and handed to the GPU as a uniform; the shaders do no per-pixel
@@ -19,7 +23,7 @@ import { FORMAT, QUALITY } from '../config.js';
 import {
   getContext, createProgram, createFullscreenTriangle,
   createRenderTarget, resizeRenderTarget, destroyRenderTarget,
-  createVideoTexture, bindTexture,
+  createVideoTexture, createGrainTexture, bindTexture,
 } from '../utils/webgl.js';
 import { VERT, FRAG_BRIGHT, FRAG_BLUR, FRAG_DOWN, FRAG_COMPOSITE } from '../shaders/shaders.js';
 
@@ -35,6 +39,29 @@ function vnoise(x) {
   const f = x - i;
   const u = f * f * (3 - 2 * f);
   return hash1(i) * (1 - u) + hash1(i + 1) * u;
+}
+
+/**
+ * The centre-crop that fits a `target`-aspect gate inside a
+ * `vw`×`vh` source, as [scaleX, scaleY, offsetX, offsetY] in UV.
+ * Exported because the live viewfinder crops to the same aspect
+ * with plain CSS object-fit — this is what makes a tap-to-focus
+ * point on that raw video map back to the same sensor coordinates
+ * this renderer would have used, without a live shader to ask.
+ */
+export function coverCrop(vw, vh, target) {
+  const srcAspect = vw / vh;
+  let cropW, cropH;
+  if (srcAspect > target) {        // source wider than the target
+    cropH = vh;
+    cropW = vh * target;
+  } else {                         // source taller than the target
+    cropW = vw;
+    cropH = vw / target;
+  }
+  const sx = cropW / vw;
+  const sy = cropH / vh;
+  return [sx, sy, (1 - sx) / 2, (1 - sy) / 2];
 }
 
 export class FilmRenderer {
@@ -56,7 +83,8 @@ export class FilmRenderer {
     this.width = 0;
     this.height = 0;
     this.crop = [1, 1, 0, 0];    // scaleX, scaleY, offsetX, offsetY
-    this.gateLive = false;       // gate movement during live preview
+    this.digitalZoom = 1;        // baked-in crop zoom, for lenses/UAs with no hardware zoom
+    this._zoomDirty = false;
     this.startedAt = performance.now();
     this.frames = 0;
     this.lastFpsAt = this.startedAt;
@@ -81,6 +109,7 @@ export class FilmRenderer {
 
     this.quad = createFullscreenTriangle(gl);
     this.videoTexture = createVideoTexture(gl);
+    this.grainTexture = createGrainTexture(gl);
 
     // A 1×1 black texture stands in for bloom/halation when a
     // quality tier disables them — cheaper than branching in the
@@ -121,8 +150,18 @@ export class FilmRenderer {
 
   setLook(look) { this.look = look; }
 
-  /** Gate movement is distracting while framing; on during playback. */
-  setGateLive(on) { this.gateLive = !!on; }
+  /**
+   * A baked-in crop zoom for lenses/browsers with no hardware zoom
+   * constraint. 1 = no zoom. Applied on top of the format crop, so
+   * a 2× digital zoom just means "crop half as much frame, into the
+   * same output size" — no separate code path.
+   */
+  setDigitalZoom(z) {
+    z = Math.max(1, z || 1);
+    if (z === this.digitalZoom) return;
+    this.digitalZoom = z;
+    this._zoomDirty = true;
+  }
 
   /* =============================================================
      SIZING — output is always exactly FORMAT.ASPECT
@@ -132,37 +171,35 @@ export class FilmRenderer {
     const vw = this.source.videoWidth;
     const vh = this.source.videoHeight;
     if (!vw || !vh) return false;
-    if (vw === this.sourceW && vh === this.sourceH) return true;
+    if (vw === this.sourceW && vh === this.sourceH && !this._zoomDirty) return true;
 
     this.sourceW = vw;
     this.sourceH = vh;
     this._textureSized = false;
+    this._zoomDirty = false;
 
     // --- Centre-crop the sensor image to the IMAX gate ---------
     const target = FORMAT.ASPECT;
-    const srcAspect = vw / vh;
-    let cropW, cropH;
-    if (srcAspect > target) {         // sensor wider than the gate
-      cropH = vh;
-      cropW = vh * target;
-    } else {                          // sensor taller than the gate
-      cropW = vw;
-      cropH = vw / target;
-    }
-    const sx = cropW / vw;
-    const sy = cropH / vh;
-    this.crop = [sx, sy, (1 - sx) / 2, (1 - sy) / 2];
-
-    // --- Output resolution -------------------------------------
-    // Cap the *long* edge rather than the width, so a portrait gate
-    // does not scale up to a frame no mobile encoder will take.
-    // Even dimensions throughout: hardware H.264 encoders require
-    // macroblock alignment and silently letterbox or fail on odd
-    // sizes.
+    const [baseSx, baseSy] = coverCrop(vw, vh, target);
+    // Output resolution is sized off the *unzoomed* crop — zoom
+    // changes which part of the sensor is sampled, not how many
+    // pixels come out the other end. Cap the long edge rather than
+    // the width, so a portrait gate does not scale up to a frame no
+    // mobile encoder will take. Even dimensions throughout: hardware
+    // H.264 encoders require macroblock alignment and silently
+    // letterbox or fail on odd sizes.
     const longEdge = Math.min(
       FORMAT.MAX_LONG_EDGE,
-      Math.round(Math.max(cropW, cropH) * FORMAT.PREVIEW_SCALE)
+      Math.round(Math.max(baseSx * vw, baseSy * vh) * FORMAT.PREVIEW_SCALE)
     );
+
+    // Digital zoom then shrinks the *sampled* crop box around its
+    // own centre — cheaper than reflowing the aspect-fit math, and
+    // exactly equivalent to it.
+    const sx = this.digitalZoom > 1 ? baseSx / this.digitalZoom : baseSx;
+    const sy = this.digitalZoom > 1 ? baseSy / this.digitalZoom : baseSy;
+    this.crop = [sx, sy, (1 - sx) / 2, (1 - sy) / 2];
+
     let w = target >= 1 ? longEdge : Math.round(longEdge * target);
     let h = target >= 1 ? Math.round(longEdge / target) : longEdge;
     w = Math.max(2, w - (w % 2));
@@ -224,15 +261,29 @@ export class FilmRenderer {
     return true;
   }
 
-  /** Gate mechanics, evaluated once per frame on the CPU. */
+  /**
+   * Gate mechanics, evaluated once per frame on the CPU. This
+   * renderer only ever runs during developing, never as a live
+   * preview, so weave and breathing are simply always on — there is
+   * no "distracting while framing" case to switch off any more.
+   */
   _gateUniform(t) {
     const g = this.look.gate;
-    const live = this.gateLive || g.livePreview;
-    if (!live || (!g.weave && !g.breathing)) return [1, 0, 0];
+    if (!g.weave && !g.breathing) return [1, 0, 0];
     const breath = 1 + g.breathing * Math.sin(t * g.breathingSpeed * Math.PI * 2);
     const wx = (vnoise(t * g.weaveSpeed) * 2 - 1) * g.weave;
     const wy = (vnoise(t * g.weaveSpeed * 0.73 + 17) * 2 - 1) * g.weave * 0.55;
     return [1 / breath, wx, wy];
+  }
+
+  /** Same low-frequency noise as the gate, offset in noise-space so
+   *  the grain tile's sample position wanders independently. */
+  _grainOffsetUniform(t, cadence) {
+    const step = Math.floor(t * cadence);
+    return [
+      vnoise(step * 0.31 + 4.1) * 128,
+      vnoise(step * 0.31 + 91.7) * 128,
+    ];
   }
 
   /* =============================================================
@@ -292,6 +343,7 @@ export class FilmRenderer {
     bindTexture(gl, this.videoTexture, 0, u.uSrc);
     bindTexture(gl, bloomTex, 1, u.uBloom);
     bindTexture(gl, haloTex, 2, u.uHalo);
+    bindTexture(gl, this.grainTexture, 3, u.uGrainTex);
 
     gl.uniform4fv(u.uCrop, crop);
     gl.uniform3fv(u.uGate, gate);
@@ -329,9 +381,13 @@ export class FilmRenderer {
     gl.uniform1f(u.uGrainSize, G.size);
     gl.uniform1f(u.uGrainChroma, G.chroma);
     gl.uniform1f(u.uGrainShadow, G.shadowBias);
-    // Quantising the seed to 24fps is what separates film grain
-    // from video noise: it must hold for the whole frame.
-    gl.uniform1f(u.uGrainSeed, Math.floor(t * (G.cadence || FORMAT.CADENCE)) % 4096);
+    // Quantising to 24fps is what separates film grain from video
+    // noise: it must hold for the whole frame. uGrainSeed still
+    // drives the dither hash below; uGrainOffset is the same
+    // quantised tick applied to the pre-baked grain texture instead.
+    const cadence = G.cadence || FORMAT.CADENCE;
+    gl.uniform1f(u.uGrainSeed, Math.floor(t * cadence) % 4096);
+    gl.uniform2fv(u.uGrainOffset, this._grainOffsetUniform(t, cadence));
 
     gl.uniform1f(u.uDither, L.print.dither);
 
@@ -392,6 +448,7 @@ export class FilmRenderer {
     Object.values(this.programs).forEach(({ program }) => gl.deleteProgram(program));
     gl.deleteTexture(this.videoTexture);
     gl.deleteTexture(this.blackTexture);
+    gl.deleteTexture(this.grainTexture);
     gl.deleteBuffer(this.quad);
   }
 }
