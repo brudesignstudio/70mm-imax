@@ -9,7 +9,7 @@
  * Recorded takes never touch the cache; they live in IndexedDB.
  */
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 const CACHE = `imax70-${VERSION}`;
 
 const SHELL = [
@@ -40,6 +40,8 @@ const SHELL = [
   './js/utils/webgl.js',
   './assets/icons/icon-192.png',
   './assets/icons/icon-512.png',
+  './assets/icons/icon-maskable-512.png',
+  './assets/favicon.png',
   './assets/film-strip.png',
 ];
 

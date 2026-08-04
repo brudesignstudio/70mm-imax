@@ -76,7 +76,7 @@ export class Gallery {
             haptic('tick');
             const res = await saveVideo(take.blob, take.ts);
             if (res.cancelled) return;
-            toast(res.method === 'share' ? 'Choose Save Video in the sheet.' : 'Downloaded.');
+            toast('Shared');
           },
         }),
         el('button', {

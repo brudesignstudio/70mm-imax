@@ -32,7 +32,7 @@ export const FORMAT = {
   ASPECT: 1 / 1.43,
 
   /** How the ratio is written in the HUD. */
-  LABEL: '1:1.43',
+  LABEL: '1.43:1',
 
   /**
    * Longest edge of the recorded frame, in pixels — the *long*

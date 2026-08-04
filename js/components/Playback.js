@@ -127,9 +127,7 @@ export class Playback {
     haptic('tick');
     const res = await saveVideo(this.take.blob, this.take.ts);
     if (res.cancelled) return;
-    toast(res.method === 'share'
-      ? 'Sent to the share sheet — choose Save Video.'
-      : 'Downloaded to your device.');
+    toast('Shared');
     this.handlers.onSaved?.(this.take, res);
   }
 
