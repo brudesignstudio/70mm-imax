@@ -256,20 +256,20 @@ export const EXPORT_FRAME = {
    *  take). */
   image: 'assets/film-strip.png',
 
-  /** Pixel geometry of that artwork (currently 90 × 120). Each bar
+  /** Pixel geometry of that artwork (currently 1086 × 1448). Each bar
    *  runs the artwork's full width; only its height differs top to
    *  bottom. Re-measure if the asset is ever re-exported at a
    *  different size — these are source-pixel bounds, not fractions. */
-  imageWidth: 90,
-  imageHeight: 120,
-  topBarHeight: 29,     // rows 0..29
-  bottomBarHeight: 29,  // rows 91..120
+  imageWidth: 1086,
+  imageHeight: 1448,
+  topBarHeight: 349,     // rows 0..349
+  bottomBarHeight: 354,  // rows 1094..1448
 
   /** Each bar's on-canvas height, as a fraction of the frame width —
    *  tied to width (not height) so the artwork is scaled uniformly
    *  from its own native size, never stretched, regardless of the
    *  gate's own aspect. Derived from topBarHeight / imageWidth. */
-  barRatio: 29 / 90,
+  barRatio: 349 / 1086,
 };
 
 /**

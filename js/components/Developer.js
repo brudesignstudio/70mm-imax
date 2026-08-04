@@ -56,10 +56,19 @@ export class Developer {
     this.onProgress = onProgress;
 
     // Replays the raw take. Never attached to the document — audio
-    // is not monitored (muted) and video is only ever read as a
-    // texture source, so it does not need to be visible.
+    // is not monitored and video is only ever read as a texture
+    // source, so it does not need to be visible.
+    //
+    // Silenced via volume, not the `muted` property: WebKit hands
+    // back a dead-silent audio track from captureStream() on a
+    // muted element, which was making every developed export come
+    // out with no sound. `muted` starts true only because autoplay
+    // policies key off it; _run() drops it back to false right
+    // after play() succeeds, once volume 0 is already guaranteed to
+    // keep it inaudible, so the audio captured downstream is real.
     this.sourceVideo = document.createElement('video');
     this.sourceVideo.muted = true;
+    this.sourceVideo.volume = 0;
     this.sourceVideo.playsInline = true;
     this.sourceVideo.setAttribute('webkit-playsinline', '');
     this.sourceVideo.setAttribute('playsinline', '');
@@ -140,6 +149,7 @@ export class Developer {
     this.renderer.setSource(v);
 
     await v.play();
+    v.muted = false;  // volume is already 0; see the constructor's comment
     await this._prime();
 
     const audioTrack = this._captureAudioTrack(v);
