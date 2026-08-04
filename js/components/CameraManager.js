@@ -74,18 +74,28 @@ export class CameraManager {
     this.close();
     this._withAudio = withAudio;
 
-    // Ask for the largest sensor read-out the UA will negotiate.
     // `ideal` rather than `exact` everywhere: an over-specified
     // constraint set is the most common cause of OverconstrainedError
     // on mid-range Android hardware.
+    //
+    // width/height ideal match FORMAT.MAX_LONG_EDGE, not the sensor's
+    // maximum: FilmRenderer crops and downsamples every frame to that
+    // long edge (~1920) regardless of what comes in, so negotiating a
+    // bigger sensor read-out (this used to ask for 3840×2160) buys the
+    // export nothing. It only costs real time three ways — more
+    // pixels for the live <video> element to decode and paint every
+    // frame while framing, more pixels the raw encoder has to push in
+    // real time while shooting, and more texture-upload bandwidth per
+    // frame when FilmRenderer replays the raw take during developing
+    // — which is most of what "laggy" actually was.
     //
     // frameRate is capped hard at FORMAT.FPS (not just `ideal`): every
     // frame above that is one more frame the develop pass has to
     // grade later for no benefit, since IMAX itself runs at 24fps.
     const video = {
       facingMode: { ideal: 'environment' },
-      width:  { ideal: 3840 },
-      height: { ideal: 2160 },
+      width:  { ideal: FORMAT.MAX_LONG_EDGE },
+      height: { ideal: Math.round(FORMAT.MAX_LONG_EDGE * 9 / 16) },
       frameRate: { ideal: FORMAT.FPS, max: FORMAT.FPS },
       // Kill the UA's own beautification/stabilisation where offered;
       // we are doing our own grade and want the flattest source.

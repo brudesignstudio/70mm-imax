@@ -9,7 +9,7 @@
  * Recorded takes never touch the cache; they live in IndexedDB.
  */
 
-const VERSION = 'v2';
+const VERSION = 'v3';
 const CACHE = `imax70-${VERSION}`;
 
 const SHELL = [
@@ -40,6 +40,7 @@ const SHELL = [
   './js/utils/webgl.js',
   './assets/icons/icon-192.png',
   './assets/icons/icon-512.png',
+  './assets/film-strip.png',
 ];
 
 self.addEventListener('install', (event) => {

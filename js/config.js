@@ -247,22 +247,29 @@ export const QUALITY = {
    lands in Photos.
    =============================================================== */
 export const EXPORT_FRAME = {
-  /** Each sprocket bar's height, as a fraction of the frame width —
-   *  tied to width rather than height so the perforations read as a
-   *  constant physical size regardless of the gate's own aspect. */
-  barRatio: 0.317,
+  /** Border artwork: sprockets plus "70mm" / "LARGE FORMAT CAMERA"
+   *  branding, baked top and bottom. This is a border, not a mask —
+   *  the video is composited into the middle at its own native
+   *  size, never cropped or stretched to fit the artwork, so the
+   *  saved file is the graded take at full resolution with a frame
+   *  around it (crop the frame out and you're left with just the
+   *  take). */
+  image: 'assets/film-strip.png',
 
-  /** Perforations per bar, top and bottom. */
-  perforations: 15,
+  /** Pixel geometry of that artwork (currently 90 × 120). Each bar
+   *  runs the artwork's full width; only its height differs top to
+   *  bottom. Re-measure if the asset is ever re-exported at a
+   *  different size — these are source-pixel bounds, not fractions. */
+  imageWidth: 90,
+  imageHeight: 120,
+  topBarHeight: 29,     // rows 0..29
+  bottomBarHeight: 29,  // rows 91..120
 
-  /** How much of each cell a perforation fills, both axes. */
-  fillRatio: 0.62,
-
-  /** Perforation corner radius, as a fraction of its own size. */
-  cornerRatio: 0.22,
-
-  barColor: '#050505',
-  perfColor: '#efe7da',
+  /** Each bar's on-canvas height, as a fraction of the frame width —
+   *  tied to width (not height) so the artwork is scaled uniformly
+   *  from its own native size, never stretched, regardless of the
+   *  gate's own aspect. Derived from topBarHeight / imageWidth. */
+  barRatio: 29 / 90,
 };
 
 /**

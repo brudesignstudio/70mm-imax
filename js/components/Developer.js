@@ -22,14 +22,22 @@ import { FORMAT, RECORDING, EXPORT_FRAME } from '../config.js';
 import { FilmRenderer } from './FilmRenderer.js';
 import { Recorder } from './Recorder.js';
 
-function roundRectPath(ctx, x, y, w, h, r) {
-  ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.arcTo(x + w, y, x + w, y + h, r);
-  ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r);
-  ctx.arcTo(x, y, x + w, y, r);
-  ctx.closePath();
+/**
+ * The film-strip border art is static and shared by every take, so
+ * it is loaded once and cached rather than re-fetched per Developer
+ * instance.
+ */
+let _filmStripImagePromise = null;
+function loadFilmStripImage() {
+  if (!_filmStripImagePromise) {
+    _filmStripImagePromise = new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('The film-strip artwork failed to load.'));
+      img.src = EXPORT_FRAME.image;
+    });
+  }
+  return _filmStripImagePromise;
 }
 
 export class Developer {
@@ -110,12 +118,16 @@ export class Developer {
     const v = this.sourceVideo;
     v.src = rawURL;
 
-    await new Promise((res, rej) => {
-      const onMeta = () => { v.removeEventListener('error', onErr); res(); };
-      const onErr = () => { v.removeEventListener('loadedmetadata', onMeta); rej(new Error('The raw take could not be decoded.')); };
-      v.addEventListener('loadedmetadata', onMeta, { once: true });
-      v.addEventListener('error', onErr, { once: true });
-    });
+    const [, filmStripImg] = await Promise.all([
+      new Promise((res, rej) => {
+        const onMeta = () => { v.removeEventListener('error', onErr); res(); };
+        const onErr = () => { v.removeEventListener('loadedmetadata', onMeta); rej(new Error('The raw take could not be decoded.')); };
+        v.addEventListener('loadedmetadata', onMeta, { once: true });
+        v.addEventListener('error', onErr, { once: true });
+      }),
+      loadFilmStripImage(),
+    ]);
+    this._filmStripImg = filmStripImg;
     await this._fixDuration(v);
 
     this.renderer = new FilmRenderer(this.gradeCanvas, this.look);
@@ -240,7 +252,7 @@ export class Developer {
   }
 
   /* =============================================================
-     THE SPROCKET FRAME
+     THE FILM-STRIP FRAME
      ============================================================= */
   _drawBars() {
     const gw = this.renderer.width;
@@ -252,25 +264,20 @@ export class Developer {
     this.exportCanvas.width = gw;
     this.exportCanvas.height = gh + bar * 2;
 
+    // The artwork is scaled from its own native pixels up to the
+    // take's actual width — never stretched to some other aspect —
+    // so the video underneath keeps its exact recorded dimensions.
     const ctx = this.ctx;
-    ctx.fillStyle = EXPORT_FRAME.barColor;
-    ctx.fillRect(0, 0, gw, gh + bar * 2);
-
-    const n = EXPORT_FRAME.perforations;
-    const cell = gw / n;
-    const pw = cell * EXPORT_FRAME.fillRatio;
-    const ph = bar * EXPORT_FRAME.fillRatio;
-    const r = Math.min(pw, ph) * EXPORT_FRAME.cornerRatio;
-
-    ctx.fillStyle = EXPORT_FRAME.perfColor;
-    for (let row = 0; row < 2; row++) {
-      const cy = row === 0 ? bar / 2 : gh + bar + bar / 2;
-      for (let i = 0; i < n; i++) {
-        const cx = cell * (i + 0.5);
-        roundRectPath(ctx, cx - pw / 2, cy - ph / 2, pw, ph, r);
-        ctx.fill();
-      }
-    }
+    const img = this._filmStripImg;
+    const iw = EXPORT_FRAME.imageWidth;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, 0, 0, iw, EXPORT_FRAME.topBarHeight, 0, 0, gw, bar);
+    ctx.drawImage(
+      img,
+      0, EXPORT_FRAME.imageHeight - EXPORT_FRAME.bottomBarHeight, iw, EXPORT_FRAME.bottomBarHeight,
+      0, gh + bar, gw, bar
+    );
 
     this._barsDrawn = true;
   }

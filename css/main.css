@@ -67,7 +67,7 @@
   /* A developed take's aspect: the gate plus two sprocket bars,
      mirrored from EXPORT_ASPECT in config.js. Same pre-script-fallback
      reasoning as --gate-aspect above. */
-  --export-aspect: 1 / 2.064;
+  --export-aspect: 1 / 2.0744;
 }
 
 body {
