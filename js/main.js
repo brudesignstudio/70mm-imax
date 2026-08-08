@@ -430,6 +430,7 @@ class App {
       look: this.settings.look,
       quality: this.settings.prefs.quality,
       digitalZoom: this._digitalZoomFactor,
+      steady: this.settings.prefs.steady !== false,
       onProgress: (f) => {
         const pct = Math.round(f * 100);
         progress.style.width = `${pct}%`;

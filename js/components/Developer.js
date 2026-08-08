@@ -22,6 +22,9 @@ import { FORMAT, RECORDING, EXPORT_FRAME } from '../config.js';
 import { FilmRenderer } from './FilmRenderer.js';
 import { Recorder } from './Recorder.js';
 
+/** How often the "Developing… n%" readout is allowed to change. */
+const PROGRESS_INTERVAL_MS = 250;
+
 /**
  * The film-strip border art is static and shared by every take, so
  * it is loaded once and cached rather than re-fetched per Developer
@@ -42,18 +45,21 @@ function loadFilmStripImage() {
 
 export class Developer {
   /**
-   * @param {object} opts { look, quality, digitalZoom, onProgress }
+   * @param {object} opts { look, quality, digitalZoom, steady, onProgress }
    *   look        the live LOOK object from Settings (grade to apply)
    *   quality     QUALITY tier key
    *   digitalZoom baked-in crop zoom chosen before the take started,
    *               for lenses/browsers with no hardware zoom (1 = none)
+   *   steady      run the steadicam over the take (PREFS.steady)
    *   onProgress  (fraction: number) => void, 0..1
    */
-  constructor({ look, quality = 'high', digitalZoom = 1, onProgress } = {}) {
+  constructor({ look, quality = 'high', digitalZoom = 1, steady = true, onProgress } = {}) {
     this.look = look;
     this.quality = quality;
     this.digitalZoom = digitalZoom;
+    this.steady = steady;
     this.onProgress = onProgress;
+    this._lastProgressAt = 0;
 
     // Replays the raw take. Kept out of the layout (off-screen, zero
     // size) rather than truly detached from the document: WebKit
@@ -155,11 +161,18 @@ export class Developer {
     this.renderer.startedAt = 0;
     this.renderer.setQuality(this.quality);
     this.renderer.setDigitalZoom(this.digitalZoom);
+    this.renderer.setSteady(this.steady);
     this.renderer.setSource(v);
 
     await v.play();
     v.muted = false;  // volume is already 0; see the constructor's comment
     await this._prime();
+
+    // Priming renders a frame or two before the take proper starts.
+    // Those frames are real enough for the steadicam to have measured
+    // motion from, so the head is re-centred here — otherwise the
+    // first recorded frame can already be sitting off-centre.
+    this.renderer.resetSteady();
 
     const audioTrack = await this._buildAudioTrack(v);
 
@@ -285,7 +298,19 @@ export class Developer {
   _tick(mediaMs) {
     if (!this.renderer.render(mediaMs)) return;
     this._blitFrame();
-    this.onProgress?.(Math.min(1, mediaMs / this._durationMs));
+
+    // Progress is reported a few times a second, not thirty. The
+    // develop pass has a real frame budget — decode, grade, blit and
+    // encode all have to fit inside one frame interval or the
+    // captured stream starts repeating frames, which is precisely the
+    // stutter this is meant to avoid — and rewriting a percentage
+    // into the DOM every frame spends part of that budget on style
+    // and layout work nobody can read at 30Hz anyway.
+    const now = performance.now();
+    if (now - this._lastProgressAt >= PROGRESS_INTERVAL_MS) {
+      this._lastProgressAt = now;
+      this.onProgress?.(Math.min(1, mediaMs / this._durationMs));
+    }
 
     // The authoritative stop signal is the duration the *live*
     // Recorder measured with its own high-resolution timer when the
@@ -335,6 +360,7 @@ export class Developer {
 
   _finish() {
     this._stopPump();
+    this.onProgress?.(1);   // the throttle above may never have hit 100
     this.recorder.stop('done');
   }
 

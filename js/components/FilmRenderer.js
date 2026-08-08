@@ -19,13 +19,14 @@
  * work that could have been hoisted.
  */
 
-import { FORMAT, QUALITY } from '../config.js';
+import { FORMAT, QUALITY, STEADY } from '../config.js';
 import {
   getContext, createProgram, createFullscreenTriangle,
   createRenderTarget, resizeRenderTarget, destroyRenderTarget,
   createVideoTexture, createGrainTexture, bindTexture,
 } from '../utils/webgl.js';
 import { VERT, FRAG_BRIGHT, FRAG_BLUR, FRAG_DOWN, FRAG_COMPOSITE } from '../shaders/shaders.js';
+import { Stabilizer } from './Stabilizer.js';
 
 /* --- CPU-side value noise for gate weave ----------------------
    Mechanical wander is low-frequency and smooth; white noise would
@@ -40,6 +41,9 @@ function vnoise(x) {
   const u = f * f * (3 - 2 * f);
   return hash1(i) * (1 - u) + hash1(i + 1) * u;
 }
+
+/** Frozen head — what the gate sees with the steadicam switched off. */
+const ZERO_STEADY = Object.freeze({ u: 0, v: 0 });
 
 /**
  * The centre-crop that fits a `target`-aspect gate inside a
@@ -89,7 +93,26 @@ export class FilmRenderer {
     this.frames = 0;
     this.lastFpsAt = this.startedAt;
     this.fps = 0;
-    this._textureSized = false;
+
+    // The steadicam. Off until asked for, because switching it on
+    // costs overscan (a tighter frame) as well as time — see
+    // setSteady() and Stabilizer.js.
+    this.stabilizer = null;
+    this._lastTrackAt = null;
+
+    // Last frame's gate vector, so the shutter blend can sample the
+    // previous frame through the transform it was actually rendered
+    // with rather than through this frame's.
+    this._gate = [1, 0, 0];
+    this._gatePrev = [1, 0, 0];
+
+    // Two video textures, alternating: one holds this frame, the
+    // other still holds the last one. Cheaper than copying a frame
+    // aside every tick, and the only reason a shutter blend is
+    // affordable at all.
+    this._texIndex = 0;
+    this._textureSized = [false, false];
+    this._havePrevFrame = false;
 
     this._initGL();
   }
@@ -108,7 +131,7 @@ export class FilmRenderer {
     };
 
     this.quad = createFullscreenTriangle(gl);
-    this.videoTexture = createVideoTexture(gl);
+    this.videoTextures = [createVideoTexture(gl), createVideoTexture(gl)];
     this.grainTexture = createGrainTexture(gl);
 
     // A 1×1 black texture stands in for bloom/halation when a
@@ -136,11 +159,18 @@ export class FilmRenderer {
     gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   }
 
+  /** The current frame's texture, and the one before it. */
+  get videoTexture() { return this.videoTextures[this._texIndex]; }
+  get prevTexture() { return this.videoTextures[this._texIndex ^ 1]; }
+
   /** Swap in a new camera stream. */
   setSource(video) {
     this.source = video;
     this.sourceW = 0;           // force a resize on the next frame
-    this._textureSized = false;
+    this._textureSized = [false, false];
+    this._havePrevFrame = false;
+    this._lastTrackAt = null;
+    this.stabilizer?.reset();
   }
 
   setQuality(tier) {
@@ -149,6 +179,33 @@ export class FilmRenderer {
   }
 
   setLook(look) { this.look = look; }
+
+  /**
+   * Turn the steadicam on or off.
+   *
+   * Switching it on changes the crop — the correction has to slide
+   * the frame into margin that was deliberately cropped away — so
+   * this re-derives the geometry rather than only setting a flag.
+   */
+  setSteady(on) {
+    const want = !!on;
+    if (want === !!this.stabilizer) return;
+    this.stabilizer = want ? new Stabilizer() : null;
+    this._lastTrackAt = null;
+    this._zoomDirty = true;
+  }
+
+  /** Re-centre the head — called when a real take is about to start,
+   *  so priming frames do not leave the path already displaced. */
+  resetSteady() {
+    this.stabilizer?.reset();
+    this._lastTrackAt = null;
+  }
+
+  /** Total crop factor: format zoom × steadicam overscan. */
+  get _cropZoom() {
+    return Math.max(1, this.digitalZoom) * (this.stabilizer ? STEADY.crop : 1);
+  }
 
   /**
    * A baked-in crop zoom for lenses/browsers with no hardware zoom
@@ -175,7 +232,8 @@ export class FilmRenderer {
 
     this.sourceW = vw;
     this.sourceH = vh;
-    this._textureSized = false;
+    this._textureSized = [false, false];
+    this._havePrevFrame = false;
     this._zoomDirty = false;
 
     // --- Centre-crop the sensor image to the IMAX gate ---------
@@ -193,12 +251,32 @@ export class FilmRenderer {
       Math.round(Math.max(baseSx * vw, baseSy * vh) * FORMAT.PREVIEW_SCALE)
     );
 
-    // Digital zoom then shrinks the *sampled* crop box around its
-    // own centre — cheaper than reflowing the aspect-fit math, and
-    // exactly equivalent to it.
-    const sx = this.digitalZoom > 1 ? baseSx / this.digitalZoom : baseSx;
-    const sy = this.digitalZoom > 1 ? baseSy / this.digitalZoom : baseSy;
+    // Digital zoom and the steadicam's overscan then shrink the
+    // *sampled* crop box around its own centre — cheaper than
+    // reflowing the aspect-fit math, and exactly equivalent to it.
+    // They multiply because they are the same operation: sample less
+    // of the sensor into the same number of output pixels. Zoom does
+    // it to reach; the steadicam does it to leave margin to slide
+    // into.
+    const zoom = this._cropZoom;
+    const sx = zoom > 1 ? baseSx / zoom : baseSx;
+    const sy = zoom > 1 ? baseSy / zoom : baseSy;
     this.crop = [sx, sy, (1 - sx) / 2, (1 - sy) / 2];
+
+    // How far the sampling window may slide before it runs off the
+    // edge of what was captured, as a fraction of the source frame:
+    // half the difference between the crop we would have taken and
+    // the (tighter) one we actually took. Gate weave and breathing
+    // are held back out of that budget, since they ride on the same
+    // offset and would otherwise be the thing that clips.
+    if (this.stabilizer) {
+      const g = this.look.gate;
+      const reserve = (g.weave + g.breathing * 0.5);
+      this.stabilizer.setLimits(
+        Math.max(0, (baseSx - sx) / 2 - reserve * sx),
+        Math.max(0, (baseSy - sy) / 2 - reserve * sy),
+      );
+    }
 
     let w = target >= 1 ? longEdge : Math.round(longEdge * target);
     let h = target >= 1 ? Math.round(longEdge / target) : longEdge;
@@ -241,24 +319,55 @@ export class FilmRenderer {
 
   _draw() { this.gl.drawArrays(this.gl.TRIANGLES, 0, 3); }
 
-  /** Upload the current video frame. texSubImage2D after the first
-   *  allocation avoids a full reallocation every frame. */
+  /**
+   * Upload the current video frame into whichever of the two video
+   * textures is not currently holding the previous frame, then make
+   * it the current one. texSubImage2D after the first allocation
+   * avoids a full reallocation every frame.
+   */
   _uploadFrame() {
     const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.videoTexture);
+    const next = this._texIndex ^ 1;
+    // Unit 0 explicitly: the composite pass leaves a different unit
+    // active, and with two video textures alternating, uploading onto
+    // whichever unit happened to be current is a trap.
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, this.videoTextures[next]);
     try {
-      if (this._textureSized) {
+      if (this._textureSized[next]) {
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, this.source);
       } else {
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, this.source);
-        this._textureSized = true;
+        this._textureSized[next] = true;
       }
     } catch {
       // Some drivers throw while the decoder is mid-reconfigure;
-      // skipping the upload just repeats the previous frame.
+      // skipping the upload (and the swap) just repeats the frame
+      // that is already current.
       return false;
     }
+    // Whatever was current is now the previous frame — but only call
+    // it usable once a real frame has actually landed in it.
+    this._havePrevFrame = this._textureSized[this._texIndex];
+    this._texIndex = next;
     return true;
+  }
+
+  /**
+   * Mix weight toward the previous frame for a given shutter angle.
+   *
+   * A shutter open for a fraction e of the frame interval integrates
+   * light over a window ending at this frame, so the centre of that
+   * window sits e/2 of the way back toward the previous one. With
+   * two samples to work with, that fraction *is* the mix — 180°
+   * gives 0.25 — which is why the term tops out at 0.5 rather than
+   * at 1: a fully open shutter is an equal blend of two frames, not
+   * a dissolve to the older one.
+   */
+  _shutterWeight() {
+    const angle = this.look.shutter?.angle;
+    if (!angle || angle <= 0) return 0;
+    return Math.min(0.5, angle / 720);
   }
 
   /**
@@ -267,13 +376,23 @@ export class FilmRenderer {
    * preview, so weave and breathing are simply always on — there is
    * no "distracting while framing" case to switch off any more.
    */
-  _gateUniform(t) {
+  _gateUniform(t, steady) {
     const g = this.look.gate;
-    if (!g.weave && !g.breathing) return [1, 0, 0];
-    const breath = 1 + g.breathing * Math.sin(t * g.breathingSpeed * Math.PI * 2);
-    const wx = (vnoise(t * g.weaveSpeed) * 2 - 1) * g.weave;
-    const wy = (vnoise(t * g.weaveSpeed * 0.73 + 17) * 2 - 1) * g.weave * 0.55;
-    return [1 / breath, wx, wy];
+    const breath = (g.breathing)
+      ? 1 + g.breathing * Math.sin(t * g.breathingSpeed * Math.PI * 2)
+      : 1;
+    const wx = g.weave ? (vnoise(t * g.weaveSpeed) * 2 - 1) * g.weave : 0;
+    const wy = g.weave ? (vnoise(t * g.weaveSpeed * 0.73 + 17) * 2 - 1) * g.weave * 0.55 : 0;
+    // The steadicam's correction arrives as a source-UV offset; the
+    // gate offset is applied *before* the crop scale, so it divides
+    // back out. Without that, a correction would be worth more
+    // horizontally than vertically on a gate that crops one axis
+    // harder than the other.
+    return [
+      1 / breath,
+      wx + steady.u / this.crop[0],
+      wy + steady.v / this.crop[1],
+    ];
   }
 
   /** Same low-frequency noise as the gate, offset in noise-space so
@@ -294,12 +413,30 @@ export class FilmRenderer {
     const video = this.source;
     if (!video || video.readyState < 2) return false;
     if (!this._resize()) return false;
+
+    // The steadicam measures the frame *before* it is uploaded, so
+    // the correction it returns lands on the same frame it was
+    // measured from. dt comes from the caller's clock (the footage's
+    // own media time during developing), not wall time, so the
+    // smoothing behaves the same whether the develop pass is keeping
+    // up or falling behind.
+    let steady = ZERO_STEADY;
+    if (this.stabilizer) {
+      const dt = this._lastTrackAt === null ? 1 / FORMAT.FPS : (nowMs - this._lastTrackAt) / 1000;
+      this._lastTrackAt = nowMs;
+      steady = this.stabilizer.track(video, dt);
+    }
+
     if (!this._uploadFrame()) return false;
 
     const L = this.look;
     const q = this.quality;
     const t = (nowMs - this.startedAt) / 1000;
-    const gate = this._gateUniform(t);
+
+    // This frame's gate becomes the reference the *next* frame's
+    // shutter blend samples the previous picture through.
+    this._gatePrev = this._havePrevFrame ? this._gate : null;
+    const gate = this._gate = this._gateUniform(t, steady);
     const crop = this.crop;
 
     /* ---- 1. bright pass ------------------------------------- */
@@ -340,13 +477,22 @@ export class FilmRenderer {
     const u = p.uniforms;
     gl.useProgram(p.program);
 
+    // The shutter can only be honoured once there is a real previous
+    // frame to integrate against; on the first frame of a take it is
+    // simply off, and the sampler is pointed at the black stand-in
+    // rather than at a texture nothing has been uploaded to yet.
+    const shutter = this._gatePrev ? this._shutterWeight() : 0;
+
     bindTexture(gl, this.videoTexture, 0, u.uSrc);
     bindTexture(gl, bloomTex, 1, u.uBloom);
     bindTexture(gl, haloTex, 2, u.uHalo);
     bindTexture(gl, this.grainTexture, 3, u.uGrainTex);
+    bindTexture(gl, shutter > 0 ? this.prevTexture : this.blackTexture, 4, u.uPrev);
 
     gl.uniform4fv(u.uCrop, crop);
     gl.uniform3fv(u.uGate, gate);
+    gl.uniform1f(u.uShutter, shutter);
+    gl.uniform3fv(u.uGatePrev, this._gatePrev || gate);
     // One source texel expressed in *output* UV, so the unsharp
     // radius is a true pixel regardless of crop.
     gl.uniform2f(u.uSrcTexel, 1 / (this.sourceW * crop[0]), 1 / (this.sourceH * crop[1]));
@@ -446,7 +592,7 @@ export class FilmRenderer {
     if (gl.isContextLost()) return;   // objects are already gone
     Object.values(this.rt).forEach((rt) => destroyRenderTarget(gl, rt));
     Object.values(this.programs).forEach(({ program }) => gl.deleteProgram(program));
-    gl.deleteTexture(this.videoTexture);
+    this.videoTextures.forEach((t) => gl.deleteTexture(t));
     gl.deleteTexture(this.blackTexture);
     gl.deleteTexture(this.grainTexture);
     gl.deleteBuffer(this.quad);

@@ -59,8 +59,11 @@ export const FORMAT = {
   FPS: 30,
 
   /**
-   * IMAX runs at 24fps. The develop pass renders at FPS and only
-   * quantises the *grain* to CADENCE (see LOOK.grain.cadence).
+   * IMAX runs at 24fps. The develop pass renders at FPS; CADENCE is
+   * only the fallback for LOOK.grain.cadence, which now defaults to
+   * FPS instead — see the note there for why quantising grain to a
+   * rate the footage is not actually running at was reading as
+   * stutter.
    */
   CADENCE: 24,
 };
@@ -125,6 +128,77 @@ export const RECORDING = {
 };
 
 /* ===============================================================
+   STEADICAM
+   ---------------------------------------------------------------
+   Software stabilisation, applied during developing — see
+   components/Stabilizer.js for how the measurement works. These are
+   the head's mechanical characteristics; none of them are exposed in
+   the Settings sheet, because the useful user-facing question is
+   only ever "on or off" (PREFS.steady).
+   =============================================================== */
+export const STEADY = {
+  /**
+   * Overscan. The frame can only slide sideways into margin that was
+   * cropped away for the purpose, so a stabilised take is this much
+   * tighter than an unstabilised one. 1.08 buys ±4% of the frame in
+   * each direction, which covers handheld walking; going much past
+   * that costs visible reach for shake nobody was complaining about.
+   */
+  crop: 1.08,
+
+  /**
+   * Long edge of the thumbnail motion is measured on. Small on
+   * purpose: global translation is a low-frequency signal, and every
+   * pixel here is paid for once per frame on the main thread, in the
+   * middle of the develop pass's frame budget.
+   */
+  analyzeLongEdge: 128,
+
+  /** Largest per-frame shift searched for, in analysis pixels. */
+  search: 12,
+
+  /** Sample every Nth pixel when scoring a candidate shift. */
+  stride: 2,
+
+  /**
+   * Smoothing time constant, in seconds. This is the whole feel of
+   * the head: it is the boundary between "the operator meant this"
+   * and "the operator's hands did this". Lower follows deliberate
+   * moves more crisply and leaves more shake in; higher glides more
+   * and lags a fast whip pan. ~0.4s is a fluid tripod head.
+   */
+  tau: 0.42,
+
+  /**
+   * Where the head starts to give way, as a fraction of the slide
+   * budget, and how much of the correction it hands back per frame
+   * once it is fully against the stop. Together these are what stop
+   * a sustained pan from spending the entire budget and leaving
+   * nothing for the shake riding on top of it — below softLimit
+   * they do nothing at all.
+   */
+  softLimit: 0.6,
+  release: 0.25,
+
+  /**
+   * A shift of two analysis pixels or more has to beat "nothing
+   * moved" by at least this ratio to be believed. Smaller shifts are
+   * exempt: genuine handheld tremor is often worth less than a whole
+   * pixel here, and its honest score sits just under the score for
+   * standing still.
+   */
+  confidence: 0.97,
+
+  /**
+   * Mean per-pixel luma difference, 0…255, past which two frames are
+   * taken not to be of the same thing at all — a cut, or motion so
+   * fast the frames no longer overlap. Consecutive frames of real
+   * footage sit far below this even during a brisk pan.
+   */
+  maxResidual: 42,
+};
+
+/* ===============================================================
    THE LOOK
    ---------------------------------------------------------------
    Ordering matters and mirrors a real imaging chain:
@@ -139,6 +213,34 @@ export const LOOK = {
      hardware exposureCompensation constraint (i.e. iOS Safari). */
   exposure: {
     ev: 0.0,          // −2 … +2 stops
+  },
+
+  /* --- Shutter -------------------------------------------------
+     A cine camera's rotating shutter is open for half of each frame
+     interval — a 180° angle — so every frame carries about 1/60s of
+     motion smeared into it at 30fps. A phone sensor in daylight
+     exposes for a thousandth of a second and hands back thirty
+     razor-sharp, completely disconnected stills a second, which is
+     exactly why phone video reads as "a lot of photographs" rather
+     than as movement. This is the single biggest difference between
+     video motion and film motion, and it is not a resolution or a
+     frame-rate problem.
+
+     We cannot lengthen the exposure after the fact, but we can
+     reconstruct the integral: the develop pass carries the previous
+     frame alongside the current one and mixes them in linear light.
+     A shutter open for a fraction e of the frame interval integrates
+     over a window whose centroid sits e/2 of the way back toward the
+     previous frame, so that fraction is the mix weight — 180° gives
+     0.25. The blend happens *after* stabilisation, using the previous
+     frame's own gate transform, so it smears real subject motion
+     rather than doubling up hand shake.
+
+       0    electronic shutter — every frame frozen (old behaviour)
+       180  the cine standard
+       360  open shutter; heavy smear, rarely wanted */
+  shutter: {
+    angle: 180,        // degrees, 0…360
   },
 
   /* --- Lens ----------------------------------------------------
@@ -210,7 +312,23 @@ export const LOOK = {
     size: 1.35,        // grain cell size in output pixels
     chroma: 0.35,      // how decorrelated the R/G/B grain is
     shadowBias: 0.55,  // grain retained in the shadows
-    cadence: 24,       // grain re-rolls at 24fps, not at refresh rate
+
+    /**
+     * How many times a second the grain pattern re-rolls.
+     *
+     * This used to be a flat 24 — the projection cadence — while the
+     * footage itself runs at FORMAT.FPS (30). Those two rates beat
+     * against each other: 30 ÷ 24 is 1.25, so the grain holds still
+     * for two consecutive frames once every four, and a frozen grain
+     * pattern over a moving picture is read as a *duplicated frame*.
+     * That 6Hz stutter on top of otherwise smooth motion was a real
+     * part of why developed takes looked like a series of stills.
+     *
+     * Locked to the frame rate, the grain changes on every frame and
+     * the beat disappears. Set it to 24 if you want the projected
+     * cadence back and are willing to live with the pulse.
+     */
+    cadence: FORMAT.FPS,
   },
 
   /* --- Gate mechanics ------------------------------------------
@@ -318,4 +436,6 @@ export const PREFS = {
   quality: 'high',
   histogram: true,
   haptics: true,
+  /** Steadicam on by default — see STEADY. */
+  steady: true,
 };

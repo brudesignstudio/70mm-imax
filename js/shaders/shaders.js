@@ -66,19 +66,30 @@ float hash2(vec2 p) {
  * against it.
  *
  *   uGate.x  = 1 / breathing scale   (magnification wander)
- *   uGate.yz = lateral weave offset  (registration play)
+ *   uGate.yz = lateral offset        (registration play + steadicam)
  *   uCrop.xy = crop scale, uCrop.zw = crop offset
  *
- * Both gate terms are ~1/1000 of the frame: felt, not seen.
+ * The two contributions to that offset are wildly different in
+ * scale and both belong here. Gate weave is ~1/1000 of the frame —
+ * felt, not seen. The steadicam correction is up to 4% of it and is
+ * the whole point of the exercise; it rides in the same term because
+ * "slide the sampling window" is the same operation either way.
+ *
+ * gateUVAt() takes the gate vector explicitly so the shutter blend
+ * can sample the previous frame through the gate *it* was rendered
+ * with. That matters once stabilisation is on: sampling the previous
+ * frame through the current frame's window would re-introduce
+ * exactly the shake the correction just took out, as a double image.
  */
 const GATE = `
 uniform vec4 uCrop;
 uniform vec3 uGate;
 
-vec2 gateUV(vec2 uv) {
-  vec2 c = (uv - 0.5) * uGate.x + uGate.yz;
+vec2 gateUVAt(vec2 uv, vec3 g) {
+  vec2 c = (uv - 0.5) * g.x + g.yz;
   return (c + 0.5) * uCrop.xy + uCrop.zw;
 }
+vec2 gateUV(vec2 uv) { return gateUVAt(uv, uGate); }
 `;
 
 /* ===============================================================
@@ -156,6 +167,7 @@ precision highp float;
 varying vec2 vUV;
 
 uniform sampler2D uSrc;
+uniform sampler2D uPrev;     // the frame before this one, for the shutter
 uniform sampler2D uBloom;
 uniform sampler2D uHalo;
 uniform sampler2D uGrainTex;
@@ -163,6 +175,10 @@ uniform sampler2D uGrainTex;
 uniform vec2  uSrcTexel;     // one source texel, expressed in output UV
 uniform vec2  uRes;          // output resolution in pixels
 uniform float uAspect;
+
+// shutter
+uniform float uShutter;      // mix weight toward the previous frame, 0…0.5
+uniform vec3  uGatePrev;     // the gate that frame was rendered through
 
 // exposure + lens
 uniform float uEV;
@@ -242,6 +258,18 @@ void main() {
   }
 
   vec3 col = toLinear(max(srgb, vec3(0.0)));
+
+  /* 1b ─ SHUTTER: reconstruct the exposure interval. A real shutter
+         integrates photons for a slice of the frame interval, so the
+         blend has to happen in linear light — mixing encoded values
+         across a bright edge smears the wrong amount of energy. One
+         plain sample of the previous frame, through the gate it was
+         rendered with; no aberration split, which no one can see
+         under a quarter-weight mix. */
+  if (uShutter > 0.001) {
+    vec3 prev = toLinear(max(texture2D(uPrev, gateUVAt(uv, uGatePrev)).rgb, vec3(0.0)));
+    col = mix(col, prev, uShutter);
+  }
 
   /* 2 ─ EXPOSURE, in linear light, before everything else. ----- */
   col *= exp2(uEV);

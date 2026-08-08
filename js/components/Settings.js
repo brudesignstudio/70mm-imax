@@ -35,6 +35,13 @@ const clone = (o) => JSON.parse(JSON.stringify(o));
    then colour, then the artefacts. */
 const SCHEMA = [
   {
+    title: 'Shutter',
+    controls: [
+      { path: 'shutter.angle', label: 'Shutter angle', min: 0, max: 360, step: 5, decimals: 0, unit: '°',
+        hint: 'A cine shutter is open for half of each frame — 180° — so movement smears between frames instead of freezing. At 0° you get the phone sensor\'s own thousandth-of-a-second stills, which is what makes video look like a run of photographs.' },
+    ],
+  },
+  {
     title: 'Exposure & Lens',
     controls: [
       { path: 'exposure.ev', label: 'Exposure', min: -2, max: 2, step: 0.05, unit: ' EV', signed: true,
@@ -83,6 +90,8 @@ const SCHEMA = [
       { path: 'grain.size', label: 'Grain size', min: 0.6, max: 4, step: 0.05 },
       { path: 'grain.chroma', label: 'Grain colour', min: 0, max: 1, step: 0.01 },
       { path: 'grain.shadowBias', label: 'Shadow grain', min: 0, max: 1, step: 0.01 },
+      { path: 'grain.cadence', label: 'Grain cadence', min: 8, max: 30, step: 1, decimals: 0, unit: 'fps',
+        hint: 'How often the grain re-rolls. Anything that does not divide the frame rate evenly makes the pattern hold for two frames now and then, which reads as a dropped frame — 30 is locked to the footage, 24 is the projected cadence with that pulse.' },
     ],
   },
   {
@@ -129,6 +138,13 @@ export class Settings {
         this.prefs.quality = v;
         this._savePrefs();
       }, 'Halation is the expensive pass. Drop a tier if developing takes too long.'),
+
+      this._switch(
+        'Steadicam',
+        this.prefs.steady !== false,
+        (v) => { this.prefs.steady = v; this._savePrefs(); },
+        'Smooths the camera path while developing, so a walking take glides instead of bouncing. Costs a slightly tighter frame — the correction has to slide the picture into margin cropped away for it.'
+      ),
 
       this._switch('Live histogram', this.prefs.histogram, (v) => {
         this.prefs.histogram = v; this._savePrefs();
