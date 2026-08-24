@@ -87,20 +87,19 @@ export class FilmRenderer {
     this.width = 0;              // the picture, not the canvas
     this.height = 0;
 
-    // The sprocket border, drawn around the picture on this same
-    // canvas — see setFilmStrip(). barHeight is 0 until one is
-    // given, in which case the canvas is exactly the picture and
-    // this renderer behaves as it always did.
+    // The full-frame artwork, drawn under the picture on this same
+    // canvas — see setFilmStrip(). Null until one is given, in which
+    // case the canvas is exactly the picture and this renderer
+    // behaves as it always did.
     this.stripTexture = null;
-    this.stripRegionTop = [1, 0, 0, 0];
-    this.stripRegionBottom = [1, 0, 0, 0];
-    this.barHeight = 0;
+    this._gateFrac = null;
 
-    // How much black canvas sits below the strip (picture + bars) —
-    // the same amount sits above it, by construction — because the
-    // saved file's own container is vertical (SAVE.ASPECT) while the
-    // strip itself is landscape. See _resize().
-    this.letterboxY = 0;
+    // Where the gate window (and so the picture) sits in the canvas,
+    // GL-style — pixels from the bottom-left. See _resize(); the
+    // no-strip fallback there centres the picture in a plain
+    // SAVE.ASPECT letterbox instead.
+    this.gateX = 0;
+    this.gateY = 0;
     this.crop = [1, 1, 0, 0];    // scaleX, scaleY, offsetX, offsetY
     this.digitalZoom = 1;        // baked-in crop zoom, for lenses/UAs with no hardware zoom
     this._zoomDirty = false;
@@ -190,19 +189,20 @@ export class FilmRenderer {
   }
 
   /**
-   * Give the renderer the sprocket border to draw around the
-   * picture. Once set, the canvas is the whole strip — picture plus
-   * a bar above and below — and that canvas is what a caller should
+   * Give the renderer the full-frame artwork to draw under the
+   * picture. Once set, the canvas is the whole artwork frame — gate
+   * window included — and that canvas is what a caller should
    * record, screenshot or mount. Without it the canvas is exactly
    * the picture, which is what the (nonexistent, today) live path
    * would want.
    *
-   * Only the two bar bands of the artwork are ever sampled; the
-   * picture window in the middle of the source image is never read,
-   * because the graded frame is drawn there instead. The bar
-   * geometry is taken as a *proportion* of EXPORT_FRAME's reference
-   * layout, scaled by the artwork's real natural size, so the same
-   * artwork re-exported at any resolution needs no config change.
+   * The artwork is drawn full-canvas every frame, then the graded
+   * picture is composited on top of it inside the gate window (see
+   * render() and _bindTarget()) — nothing here reads only part of
+   * the source image. The gate's position is taken as a *proportion*
+   * of EXPORT_FRAME's reference layout, scaled by the artwork's real
+   * natural size, so the same artwork re-exported at any resolution
+   * needs no config change.
    *
    * @param {HTMLImageElement} image  EXPORT_FRAME.image, loaded
    */
@@ -212,25 +212,20 @@ export class FilmRenderer {
 
     const iw = image.naturalWidth || EXPORT_FRAME.imageWidth;
     const ih = image.naturalHeight || EXPORT_FRAME.imageHeight;
-    // How much bigger the supplied artwork is than the layout the
-    // config measured. Uniform: the artwork is never stretched.
-    const scale = iw / EXPORT_FRAME.imageWidth;
-    const topPx = EXPORT_FRAME.topBarHeight * scale;
-    const botPx = EXPORT_FRAME.bottomBarHeight * scale;
+    const g = EXPORT_FRAME.gate;
+    this._gateFrac = {
+      left:   g.x / iw,
+      right:  (iw - g.x - g.width) / iw,
+      top:    g.y / ih,
+      bottom: (ih - g.y - g.height) / ih,
+      width:  g.width / iw,
+      height: g.height / ih,
+    };
 
     this.stripTexture ??= createVideoTexture(gl);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.stripTexture);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
-
-    // UV sub-rects, in the flipped space UNPACK_FLIP_Y_WEBGL puts
-    // the texture in: v = 0 is the artwork's *bottom* row, so the
-    // top bar is the band just under v = 1 and the bottom bar is
-    // the band just above v = 0.
-    const topV = topPx / ih;
-    const botV = botPx / ih;
-    this.stripRegionTop    = [1, topV, 0, 1 - topV];
-    this.stripRegionBottom = [1, botV, 0, 0];
 
     this._zoomDirty = true;   // force _resize() to re-size the canvas
   }
@@ -348,29 +343,32 @@ export class FilmRenderer {
     this.width = w;
     this.height = h;
 
-    // The strip: the picture with a sprocket bar above and below
-    // it. Each bar's depth is a fraction of the picture's *width*,
-    // so the artwork scales uniformly out of its own native size
-    // whatever shape the picture turns out to be.
-    let bar = this.stripTexture ? Math.round(w * EXPORT_FRAME.barRatio) : 0;
-    bar = bar - (bar % 2);
-    this.barHeight = bar;
-    const stripH = h + bar * 2;
+    // The canvas: the picture keeps its full native width and
+    // resolution, and the canvas grows around it to fit the artwork's
+    // own frame — the gate window is a fixed fraction of the artwork,
+    // so scaling the canvas up from the picture's size is what makes
+    // the gate land exactly on the picture with no crop or stretch.
+    // No strip loaded falls back to a plain SAVE.ASPECT letterbox,
+    // black above and below, split evenly. Even dimensions
+    // throughout, same reasoning as w/h above: hardware encoders want
+    // macroblock alignment on the canvas they are actually handed.
+    let canvasW = w;
+    let canvasH;
+    if (this.stripTexture && this._gateFrac) {
+      const g = this._gateFrac;
+      canvasW = Math.round(w / g.width);
+      canvasH = Math.round(h / g.height);
+      canvasH = canvasH - (canvasH % 2);
+      this.gateX = Math.round(canvasW * g.left);
+      this.gateY = Math.round(canvasH * g.bottom);
+    } else {
+      canvasH = Math.max(h, Math.round(w / SAVE.ASPECT));
+      canvasH = canvasH - (canvasH % 2);
+      this.gateX = 0;
+      this.gateY = (canvasH - h) / 2;
+    }
 
-    // The canvas is taller still: the strip sits centred inside a
-    // SAVE.ASPECT container, with the difference split evenly above
-    // and below as plain black letterboxing. The picture keeps its
-    // full native width and resolution here — only the surrounding
-    // canvas grows, which costs a saved file some near-free bits (a
-    // solid colour compresses to almost nothing) and no picture
-    // quality at all. Even dimensions throughout, same reasoning as
-    // w/h above: hardware encoders want macroblock alignment on the
-    // canvas they are actually handed.
-    let canvasH = Math.max(stripH, Math.round(w / SAVE.ASPECT));
-    canvasH = canvasH - (canvasH % 2);
-    this.letterboxY = (canvasH - stripH) / 2;
-
-    this.canvas.width = w;
+    this.canvas.width = canvasW;
     this.canvas.height = canvasH;
 
     // --- Offscreen chain ---------------------------------------
@@ -398,44 +396,42 @@ export class FilmRenderer {
       gl.viewport(0, 0, rt.width, rt.height);
     } else {
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      // The picture occupies the band between the two sprocket bars,
-      // which itself sits letterboxY above the canvas floor. GL's y
-      // runs from the bottom, so the offset is bottom letterbox +
-      // bottom bar. With no strip and no letterboxing, both are 0
-      // and this is the whole canvas, as before.
-      gl.viewport(0, this.letterboxY + this.barHeight, this.width, this.height);
+      // The picture lands inside the gate window cut into the
+      // artwork, at (gateX, gateY) from the canvas floor — see
+      // _resize(). With no strip loaded that window is just a plain
+      // centred letterbox, and with no letterboxing either both are
+      // 0 and this is the whole canvas, as before.
+      gl.viewport(this.gateX, this.gateY, this.width, this.height);
     }
   }
 
   /**
-   * The sprocket bars, above and below the picture.
+   * The full-frame artwork, under the picture.
    *
-   * Redrawn every frame rather than once per resize. They cannot
+   * Redrawn every frame rather than once per resize. It cannot
    * change between frames, and `preserveDrawingBuffer: true` means
-   * in principle they would survive — but "in principle" is doing a
+   * in principle it would survive — but "in principle" is doing a
    * lot of work across mobile drivers, and the honest cost here is
-   * two triangles of trivial fragment shader over about a sixth of
-   * the canvas. Cheaper than being wrong, and *far* cheaper than
-   * the full-frame canvas-to-canvas copy this replaced.
+   * two triangles of trivial fragment shader over the canvas. Cheaper
+   * than being wrong, and *far* cheaper than the full-frame
+   * canvas-to-canvas copy this replaced.
+   *
+   * Runs *before* the picture composite pass (see render()), since
+   * it now covers the gate window too — the composite pass paints
+   * over it there. Bound to texture unit 5, not 0, so it does not
+   * clobber the composite pass's own unit 0-4 bindings, which are
+   * already set by the time this runs.
    */
   _drawStrip() {
     if (!this.stripTexture) return;
     const gl = this.gl;
     const p = this.programs.strip;
-    const bar = this.barHeight;
-    const bottomBarY = this.letterboxY;
-    const topBarY = this.letterboxY + bar + this.height;
 
     gl.useProgram(p.program);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-    bindTexture(gl, this.stripTexture, 0, p.uniforms.uSrc);
-
-    gl.viewport(0, topBarY, this.width, bar);
-    gl.uniform4fv(p.uniforms.uRegion, this.stripRegionTop);
-    this._draw();
-
-    gl.viewport(0, bottomBarY, this.width, bar);
-    gl.uniform4fv(p.uniforms.uRegion, this.stripRegionBottom);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    bindTexture(gl, this.stripTexture, 5, p.uniforms.uSrc);
+    gl.uniform4fv(p.uniforms.uRegion, [1, 1, 0, 0]);
     this._draw();
   }
 
@@ -659,7 +655,7 @@ export class FilmRenderer {
 
     gl.uniform1f(u.uDither, L.print.dither);
 
-    // The letterbox above and below the strip. Cleared on the
+    // The letterbox fallback, when no strip is loaded. Cleared on the
     // canvas's own framebuffer, full-viewport, every frame rather
     // than once on resize: preserveDrawingBuffer *should* make a
     // one-time clear stick, but trusting that across mobile drivers
@@ -670,11 +666,17 @@ export class FilmRenderer {
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT);
 
+    /* ---- 5. the full-frame artwork, under the picture -------- */
+    // Has to run before the picture: it now covers the gate window
+    // too, so the composite draw below paints over it there rather
+    // than beside it. Reactivating the composite program afterward
+    // is safe — its uniforms, set above, live on the program object
+    // and survive switching away and back.
+    this._drawStrip();
+    gl.useProgram(p.program);
+
     this._bindTarget(null);
     this._draw();
-
-    /* ---- 5. the sprocket bars around it --------------------- */
-    this._drawStrip();
 
     /* ---- 6. rolling fps, for the settings readout ----------- */
     this.frames++;

@@ -430,55 +430,47 @@ export const QUALITY = {
 /* ===============================================================
    EXPORT FRAME
    ---------------------------------------------------------------
-   The saved file isn't just the graded gate — it's a strip of film:
-   the graded 1.43:1 picture with a row of sprocket perforations
-   above and below. Baked into the pixels once, during developing,
-   so it's identical in the in-app player, the gallery, and whatever
-   lands in Photos.
+   The saved file isn't just the graded gate — it's the artwork in
+   assets/film-strip.png, full-bleed, with the graded picture
+   composited into a cutout ("the gate window") inside it. Baked
+   into the pixels once, during developing, so it's identical in the
+   in-app player, the gallery, and whatever lands in Photos.
 
-   The bars are thin on purpose, and this is the number that decides
-   whether the export is landscape at all. A 1.43:1 picture is 0.699
-   of its own width tall; two bars of ratio r add 2r on top of that,
-   so the finished strip is landscape only while r < 0.15. The old
-   portrait artwork ran two 0.32 bars — nearly two thirds of the
-   frame — which is why the file came out taller than the picture
-   inside it. 0.063 keeps the strip comfortably wide and is close to
-   the real thing: on 15/70 stock the perforated margin is about
-   8.7mm either side of a 70.41mm-wide image.
+   Unlike a live-recorded clip, this is deliberately built for how it
+   gets watched after saving: full-screen, vertically, on a phone.
+   The artwork is authored at exactly that shape (900 × 1600 — 9:16,
+   matching SAVE.ASPECT) with the IMAX gate's own 1.43:1 window sized
+   and placed inside it, branding filling what would otherwise be
+   plain letterbox space above and below. The gate window is the only
+   part of the artwork ever painted over; everything outside it —
+   logo, sprockets, the camera graphic — comes through into the
+   saved file untouched.
    =============================================================== */
 export const EXPORT_FRAME = {
-  /** Border artwork: the sprocket rows, baked top and bottom. This
-   *  is a border, not a mask — the video is composited into the
-   *  middle at its own native size, never cropped or stretched to
-   *  fit the artwork, so the saved file is the graded take at full
-   *  resolution with a frame around it. */
+  /** Full-frame artwork. Not a border — the whole canvas, gate
+   *  window included. The video is composited into the gate at its
+   *  own native size, never cropped or stretched to fit, so the
+   *  saved file is the graded take at full resolution sitting inside
+   *  the artwork's frame. */
   image: 'assets/film-strip.png',
 
-  /** Pixel geometry of that artwork. Each bar runs the artwork's
-   *  full width; only its height is measured here.
-   *
-   *  These are read as *proportions*, not as absolute pixels: the
-   *  loader scales them by the image's real natural width, so
-   *  re-exporting the same layout at any resolution needs no change
-   *  here. Only re-measure if the bars' depth relative to the
-   *  artwork's width actually changes.
+  /** Pixel geometry of that artwork, and the gate window cut into
+   *  it. Read as *proportions* of the artwork's own size, not as
+   *  absolute pixels — the loader scales them by the image's real
+   *  natural size, so re-exporting the same layout at any resolution
+   *  needs no change here. Only re-measure if the gate moves or
+   *  resizes relative to the frame around it.
    *
    *  Reference layout (assets/film-strip.png):
-   *    2288 × 1888   whole strip
-   *      0 …  143    top bar        (144px)
-   *    144 … 1743    picture window (2288 × 1600 — exactly 1.43:1,
-   *                  never drawn; the graded frame goes here)
-   *   1744 … 1887    bottom bar     (144px)
+   *     900 × 1600   whole frame (9:16)
+   *       0 …  485   top margin      — logo
+   *     486 … 1114   gate window     (900 × 629 — 1.43:1, never
+   *                  drawn; the graded frame goes here)
+   *    1115 … 1599   bottom margin   — camera graphic
    */
-  imageWidth: 2288,
-  imageHeight: 1888,
-  topBarHeight: 144,
-  bottomBarHeight: 144,
-
-  /** Each bar's on-canvas height as a fraction of the picture's
-   *  width — tied to width, not height, so the artwork is scaled
-   *  uniformly from its own native size and never stretched. */
-  barRatio: 144 / 2288,
+  imageWidth: 900,
+  imageHeight: 1600,
+  gate: { x: 0, y: 486, width: 900, height: 629 },
 };
 
 /* ===============================================================

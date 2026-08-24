@@ -32,6 +32,8 @@ function fakeSource(w, h) {
 const strip = new Image();
 strip.src = EXPORT_FRAME.image;
 strip.onload = () => {
+  log('strip artwork: ' + strip.naturalWidth + '×' + strip.naturalHeight +
+      '  aspect ' + (strip.naturalWidth / strip.naturalHeight).toFixed(4));
   log('SAVE.ASPECT=' + SAVE.ASPECT.toFixed(4) + '  EXPORT_ASPECT=' + EXPORT_ASPECT.toFixed(4));
   check('EXPORT_ASPECT === SAVE.ASPECT', EXPORT_ASPECT, SAVE.ASPECT);
   log('');
@@ -45,41 +47,38 @@ strip.onload = () => {
   log('— upright phone, 1440×1920 sensor —');
   r.setSource(fakeSource(1440, 1920));
   r.render(0);
-  const stripH = r.height + r.barHeight * 2;
-  log('picture   : ' + r.width + '×' + r.height);
-  log('bar       : ' + r.barHeight + 'px  → strip ' + r.width + '×' + stripH);
-  log('letterboxY: ' + r.letterboxY + 'px  (top == bottom, by construction)');
+  log('picture   : ' + r.width + '×' + r.height + '  (from ' + r.gateX + ',' + r.gateY + ')');
   log('canvas    : ' + canvas.width + '×' + canvas.height +
       '  aspect ' + (canvas.width / canvas.height).toFixed(4));
 
   check('canvas is PORTRAIT (taller than wide)', canvas.width < canvas.height, true);
-  check('canvas aspect ≈ SAVE.ASPECT (±1 rounded px)',
-        Math.abs(canvas.width / canvas.height - SAVE.ASPECT) < 0.001, true);
+  check('canvas aspect ≈ artwork aspect (±0.5%)',
+        Math.abs(canvas.width / canvas.height - strip.naturalWidth / strip.naturalHeight) < 0.005, true);
   check('picture width unchanged (full native res, no scale-down)', r.width, 1440);
   check('picture is still 1.43:1', (r.width / r.height).toFixed(2), FORMAT.ASPECT.toFixed(2));
-  check('strip vertically centred: 2×letterboxY + stripH == canvasH',
-        2 * r.letterboxY + stripH, canvas.height);
   check('even canvas dimensions', canvas.width % 2 === 0 && canvas.height % 2 === 0, true);
 
   document.body.appendChild(canvas);
 
-  // --- pixel probes: letterbox / bar / picture, top to bottom -----
+  // --- pixel probes: top margin art / gate picture / bottom margin art ----
   const g2 = document.createElement('canvas');
   g2.width = canvas.width; g2.height = canvas.height;
   const cx = g2.getContext('2d');
   cx.drawImage(canvas, 0, 0);
   const px = (x, y) => { const d = cx.getImageData(x, y, 1, 1).data; return d[0] + ',' + d[1] + ',' + d[2]; };
   const midX = canvas.width >> 1;
-  log('\ntop letterbox   y=4                = ' + px(midX, 4));
-  log('top bar         y=' + (r.letterboxY + 10) + '            = ' + px(midX + 300, r.letterboxY + 10));
-  log('picture         y=' + (canvas.height >> 1) + '            = ' + px(midX, canvas.height >> 1));
-  log('bottom bar      y=' + (canvas.height - r.letterboxY - 10) + '           = ' +
-      px(midX + 300, canvas.height - r.letterboxY - 10));
-  log('bottom letterbox y=' + (canvas.height - 4) + '           = ' + px(midX, canvas.height - 4));
+  // r.gateY/r.height are GL-space (0 at canvas bottom); the probes
+  // below read the 2D canvas, which is y-down, so it's the inverse.
+  const topMarginY = Math.round((canvas.height - r.gateY - r.height) / 2);
+  const gateY = canvas.height - Math.round(r.gateY + r.height / 2);
+  const bottomMarginY = canvas.height - Math.round(r.gateY / 2);
+  log('\ntop margin (artwork) y=' + topMarginY + ' = ' + px(midX, topMarginY));
+  log('gate (picture)       y=' + gateY + ' = ' + px(midX, gateY));
+  log('bottom margin (artwork) y=' + bottomMarginY + ' = ' + px(midX, bottomMarginY));
 
-  check('top letterbox is black',    px(midX, 2),                     '0,0,0');
-  check('bottom letterbox is black', px(midX, canvas.height - 2),     '0,0,0');
-  check('picture centre is NOT black', px(midX, canvas.height >> 1) !== '0,0,0', true);
+  check('top margin is NOT black (artwork visible)', px(midX, topMarginY) !== '0,0,0', true);
+  check('bottom margin is NOT black (artwork visible)', px(midX, bottomMarginY) !== '0,0,0', true);
+  check('gate shows the picture, not the artwork', px(midX, gateY) !== '0,0,0', true);
 
   log('\n' + (fails ? fails + ' FAILURE(S)' : 'ALL CHECKS PASSED'));
 };
