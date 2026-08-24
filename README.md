@@ -1,7 +1,8 @@
 # 70MM — Large Format Camera
 
 A mobile-first PWA that shoots on a digital emulation of 70mm large-format
-negative. Tall 1:1.43 gate, three minutes to a reel, no libraries.
+negative. Wide 1.43:1 gate shot with the phone held upright, three minutes
+to a reel, no libraries.
 
 Built with plain HTML, CSS and ES modules. No build step — serve the folder.
 
@@ -135,15 +136,36 @@ the reference negative still reach you.
 
 ### The sprocket frame
 
-The saved file isn't just the graded gate — it's composited onto a strip of
-film: the graded image, kept in whatever orientation it was actually shot in,
-with a row of sprocket perforations above and below, baked into the pixels
-once during developing. That's the file that goes into the gallery, into
+The saved file isn't just the graded gate — it's a strip of film: the graded
+1.43:1 picture with a row of sprocket perforations above and below, baked
+into the pixels once during developing. The bars are thin (each 1/16 of the
+picture's width) so the finished strip stays landscape; a 1.43:1 picture is
+0.699 of its own width tall, so any bar deeper than 0.15 of the width would
+tip the file back into portrait. That's the file that goes into the gallery, into
 in-app playback, and into Photos — there's no separate "clean" version.
 Geometry lives in `EXPORT_FRAME` in [`js/config.js`](js/config.js);
 `EXPORT_ASPECT` is the resulting constant aspect ratio, mirrored in
 `--export-aspect` in `main.css` for the playback frame and gallery
 thumbnails.
+
+### The 16:9 guide
+
+A 1.43:1 frame is taller than every screen it is likely to be shown on, so the
+viewfinder can mark where a widescreen camera behind the same lens would have
+cut: two hairlines, full width, 80.44% of the gate's height, with everything
+outside them very faintly shaded. Compose inside the lines and the shot
+survives a 16:9 crop; compose across them and you are using the format.
+
+Same width and not same height because that is the honest comparison — two
+cameras behind one lens see the same horizontal field, and the wider format is
+the one that keeps more picture above and below.
+
+It is a viewfinder overlay and nothing else. It is never composited into a
+frame, never recorded, and never reaches a developed take: the develop pass
+reads the raw camera file, not the DOM. The geometry is `GUIDE` in
+[`js/config.js`](js/config.js), mirrored as `--guide-band` / `--guide-inset`
+in `main.css`; the toggle is the right-hand rail button and it persists in
+`PREFS.guide`.
 
 ### Zoom
 
@@ -164,21 +186,24 @@ something that can vary frame-to-frame.
 
 ## Format and limits
 
-- **Gate:** 1:1.43 — taller than it is wide — centre-cropped from the sensor
-  and enforced in the shader, the canvas dimensions, and the CSS box. From a
-  1080×1920 portrait sensor frame that yields **1080×1544**: full sensor
-  width, ~19.6% cropped off the height. Even pixel dimensions throughout,
-  because hardware H.264 encoders need macroblock alignment.
+- **Gate:** 1.43:1 — the projected 15/70 IMAX aperture, 70.41 × 49.15 mm,
+  wider than it is tall — taken as a centre band out of an *upright* sensor
+  frame and enforced in the shader, the canvas dimensions and the CSS box.
+  From a 1440×1920 sensor frame that yields **1440×1006**: full sensor width,
+  ~48% cropped off the height. Even pixel dimensions throughout, because
+  hardware H.264 encoders need macroblock alignment.
 
-  `FORMAT.ASPECT` in [`js/config.js`](js/config.js) is the single source of
-  truth. It drives the shader crop, the canvas size, the CSS gate, which way
-  the phone must be held, the rail layout, and the manifest orientation. Set
-  it above 1 and the whole app flips to a landscape gate; nothing else needs
-  to change.
+  `FORMAT.ASPECT` drives the shader crop, the canvas size and the CSS gate.
+  `SHOOT_ORIENTATION` — a separate constant, deliberately not derived from it
+  — drives the orientation guard, the rail layout and the manifest. The two
+  used to be the same question, because a frame taller than it is wide can
+  only be shot upright. A wide frame does not have to be shot sideways: it
+  can be a band out of an upright one, which is what this does.
 
-  > A note on the number: the *projected* 15/70 IMAX aperture is
-  > 70.41 × 49.15 mm — **1.43:1**, wider than it is tall. This app
-  > deliberately uses the inverse, `1:1.43`, for a portrait frame.
+  > What that costs is horizontal reach. The band is only as wide as the
+  > phone's short axis, so a shot frames tighter than the same lens held
+  > sideways would. `FORMAT.CAPTURE` pays for it in resolution (1440 across
+  > rather than 1080) and the 0.5× button pays for it in focal length.
 - **Recording:** capped at exactly 3:00. Enforced twice — a timer *and* a
   per-frame check, because mobile browsers throttle timers in backgrounded
   tabs and only the tick actually guarantees the ceiling.
@@ -214,7 +239,7 @@ screen before you shoot.
 | 2× zoom | ✅ hardware `zoom` constraint where exposed | ❌ | CSS scale live, baked into the crop at develop time |
 | Haptics | ✅ `navigator.vibrate` | ❌ no API reaches the Taptic Engine | one-frame luminance pulse on the gate — a tally, which is what the haptic was for |
 | Orientation lock | ✅ (requires fullscreen) | ❌ | guard stays live; rotating mid-take stops the take cleanly |
-| Fullscreen | ✅ | ❌ for non-`<video>` elements | button is hidden rather than shown failing; install to Home Screen instead — the manifest requests fullscreen |
+| Fullscreen | ✅ | ❌ for non-`<video>` elements | requested silently by the shutter, never a control of its own; install to Home Screen instead — the manifest requests fullscreen |
 | Wake lock | ✅ | ✅ 16.4+ | screen may dim on older iOS |
 
 None of these show a pop-up explaining the gap — the control itself (hidden,
@@ -229,17 +254,67 @@ That happens to be the right thing for a movie camera anyway.
 
 ## Notes on a few decisions
 
-**Why the orientation requirement is derived, not hard-coded.** The gate's
-shape decides which way the phone has to be held, so `GATE_ORIENTATION` is
-computed from `FORMAT.ASPECT` and handed to `OrientationGuard`. The layout
-follows the same signal: rails sit on the letterbox bars, which means side
-rails for a wide gate and top/bottom bars for a tall one. Nothing in the CSS
-or the guard assumes landscape.
+**Why the shooting orientation is its own constant.** It used to be derived
+from `FORMAT.ASPECT`, on the reasoning that a frame's shape decides how the
+phone has to be held. That is only true one way round: a *tall* gate can only
+be shot upright, but a wide gate has a choice — hold the phone sideways, or
+take the wide frame as a band out of an upright one. This app takes the band,
+so `SHOOT_ORIENTATION` is stated rather than computed, and it is what the
+guard, the rail layout and the manifest all follow. `data-gate` in the CSS
+carries it for the same reason: what the layout needs to know is where the
+leftover screen is, and with a wide band on an upright phone that is above and
+below.
 
-**Why the encoder cap is on the long edge.** Capping *width* at 1920 would
-make a 1:1.43 frame 1920 × 2746 — 5.3 megapixels, well past what mobile
-hardware encoders sustain. `MAX_LONG_EDGE` caps whichever edge is longer, so
-the portrait gate lands at 1342 × 1920 at most.
+**Why the camera asks for 1440 × 1920 and not 1920 × 1080.** The gate is a
+wide band cropped out of an upright frame, so the finished film's width *is*
+the track's short axis. Ask the sensor for 1920 × 1080 and the export can
+never be more than 1080 across, whatever `MAX_LONG_EDGE` says — there is
+nothing downstream that can put back resolution never captured. 1440 × 1920
+buys that axis back and tends to open the sensor's full width rather than a
+16:9 slice of it, which is the same axis again, for 2.8MP.
+
+**Why the HUD sits outside the gate.** A 1.43:1 frame on an upright phone is
+always limited by the phone's width, so there is a great deal of unused screen
+above and below it — and no reason to make the operator compose through a
+layer of chips. The readouts and manual controls are siblings of the gate, not
+an overlay on it. Playback keeps its overlay HUD, because a developed take
+fills its frame and there is no spare screen there.
+
+**Why the encoder cap is on the long edge.** `MAX_LONG_EDGE` caps whichever
+edge is longer rather than the width, so the cap means the same thing whatever
+shape the gate is: at 1.43:1 a take lands at 1920 × 1342 at most, and a gate
+flipped to 1:1.43 would land at 1342 × 1920 rather than at 1920 × 2746 — 5.3
+megapixels, well past what mobile hardware encoders sustain.
+
+**Why developing draws on one canvas, not two.** It used to grade onto an
+offscreen WebGL canvas and then copy that into a second, 2D canvas carrying
+the sprocket border — a full-frame canvas-to-canvas copy every frame, on some
+mobile drivers a readback, inside a budget that already has to fit a decode, a
+grade and an encode into one frame interval. The bars are drawn in GL instead
+now (`FilmRenderer.setFilmStrip` / `_drawStrip`), the picture composites into
+a viewport offset by the bar depth, and MediaRecorder captures that one
+canvas. The graded frame is never copied anywhere.
+
+**Why the capture is clocked by hand.** `captureStream(0)` emits nothing until
+`requestFrame()` asks, and the develop pass asks exactly once per graded
+frame. That one-to-one guarantee is the point. Given a frame rate instead, the
+capture runs on its own 30Hz clock while the grade runs on the raw take's, and
+two independent 30Hz clocks beat against each other: periodically the capture
+samples a canvas nothing has redrawn — a duplicated frame — and then misses
+one that was. Neither clock is late and the footage still stutters, most
+visibly on exactly the fast movement that makes a repeated frame obvious.
+Engines with no `requestFrame` fall back to a fixed rate, where a beat beats
+no frames at all.
+
+**Why the shutter default is 90° and not 180°.** A real shutter integrates
+continuously; two frames give two samples, so what a shutter blend actually
+puts on screen is the previous picture as a discrete ghost one whole frame
+back at the mix weight. At the cine-standard 180° that weight is 0.25, and a
+quarter-strength copy displaced by a full frame does not read as motion blur
+on anything moving quickly — it reads as a double image, as if the frames
+could not keep up. 90° halves it and keeps enough integration that movement is
+not the run of frozen stills a phone sensor hands back. The slider goes to 360
+either way.
 
 **Why the gate is sized in JavaScript.** The obvious CSS answer,
 `aspect-ratio` plus `vh`, is wrong on phones: `100vh` on iOS is the *large*

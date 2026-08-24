@@ -35,7 +35,7 @@
       <h1 class="intro__title" id="intro-title">Large Format Camera</h1>
       <p class="intro__body">
         A digital emulation of 70mm large-format negative.
-        Shot at&nbsp;1:1.43, three minutes to a reel.
+        Held upright, exposed at&nbsp;1.43:1, three minutes to a reel.
       </p>
 
       <button class="btn btn--primary" id="btn-begin" type="button">
@@ -57,6 +57,26 @@
 
     <!-- The gate. Everything the camera "sees" lives inside it. -->
     <div class="stage">
+      <!-- The HUD sits *outside* the gate, above and below it.
+           A 1.43:1 frame on an upright phone is always limited by
+           the phone's width, so there is a great deal of unused
+           screen above and below it and no reason at all to put
+           readouts and controls on top of the picture the operator
+           is trying to compose. Nothing here overlaps the frame. -->
+      <div class="hud hud--above">
+        <div class="hud__row hud__row--top">
+          <div class="hud__group">
+            <span class="rec" id="rec-dot" aria-hidden="true"></span>
+            <span class="hud__timer" id="timer">00:00</span>
+            <span class="hud__sep" aria-hidden="true">/</span>
+            <span class="hud__remain" id="remaining">03:00</span>
+          </div>
+          <div class="hud__group hud__group--right">
+            <span class="hud__tag" id="tag-format">1.43:1 · 70MM</span>
+          </div>
+        </div>
+      </div>
+
       <div class="frame" id="frame">
         <!-- The viewfinder: the raw camera feed, shown directly —
              no shader between the lens and the screen, the same as
@@ -72,44 +92,39 @@
           <span class="gate__mark gate__mark--br"></span>
         </div>
 
+        <!-- 16:9 safe-action guide. Two hairlines marking where a
+             widescreen camera behind this same lens would have cut:
+             same width, less height. Overlay only — never recorded,
+             never developed into a take. -->
+        <div class="guide" id="guide" aria-hidden="true">
+          <span class="guide__band"><b class="guide__tag">16:9</b></span>
+        </div>
+
         <!-- Tap-to-focus reticle -->
         <div class="reticle" id="reticle" aria-hidden="true"></div>
 
-        <!-- HUD -->
-        <div class="hud">
-          <div class="hud__row hud__row--top">
-            <div class="hud__group">
-              <span class="rec" id="rec-dot" aria-hidden="true"></span>
-              <span class="hud__timer" id="timer">00:00</span>
-              <span class="hud__sep" aria-hidden="true">/</span>
-              <span class="hud__remain" id="remaining">03:00</span>
-            </div>
-            <div class="hud__group hud__group--right">
-              <span class="hud__tag" id="tag-format">1:1.43 · 70MM</span>
-            </div>
-          </div>
-
-          <div class="hud__row hud__row--bottom">
-            <div class="hud__group hud__locks" id="locks">
-              <button class="lock" id="btn-ae" type="button" aria-pressed="false">AE</button>
-              <button class="lock" id="btn-awb" type="button" aria-pressed="false">AWB</button>
-              <div class="ev" id="ev-wrap">
-                <label class="ev__label" for="ev">EV</label>
-                <input class="ev__slider" id="ev" type="range" min="-2" max="2" step="0.1" value="0" />
-                <span class="ev__value" id="ev-value">0.0</span>
-              </div>
-            </div>
-            <div class="zoom" id="zoom" role="group" aria-label="Zoom">
-              <button type="button" data-zoom="0.5" id="btn-zoom-05" aria-pressed="false">0.5×</button>
-              <button type="button" data-zoom="1" aria-pressed="true">1×</button>
-              <button type="button" data-zoom="2" aria-pressed="false">2×</button>
-            </div>
-            <canvas class="histogram" id="histogram" width="128" height="48" aria-label="Live histogram"></canvas>
-          </div>
-        </div>
-
         <!-- Reel progress: a thin line that fills across 3 minutes -->
         <div class="reel" aria-hidden="true"><i id="reel-fill"></i></div>
+      </div>
+
+      <div class="hud hud--below">
+        <div class="hud__row hud__row--bottom">
+          <div class="hud__group hud__locks" id="locks">
+            <button class="lock" id="btn-ae" type="button" aria-pressed="false">AE</button>
+            <button class="lock" id="btn-awb" type="button" aria-pressed="false">AWB</button>
+            <div class="ev" id="ev-wrap">
+              <label class="ev__label" for="ev">EV</label>
+              <input class="ev__slider" id="ev" type="range" min="-2" max="2" step="0.1" value="0" />
+              <span class="ev__value" id="ev-value">0.0</span>
+            </div>
+          </div>
+          <div class="zoom" id="zoom" role="group" aria-label="Zoom">
+            <button type="button" data-zoom="0.5" id="btn-zoom-05" aria-pressed="false">0.5×</button>
+            <button type="button" data-zoom="1" aria-pressed="true">1×</button>
+            <button type="button" data-zoom="2" aria-pressed="false">2×</button>
+          </div>
+          <canvas class="histogram" id="histogram" width="128" height="48" aria-label="Live histogram"></canvas>
+        </div>
       </div>
     </div>
 
@@ -136,8 +151,12 @@
           <circle class="shutter__progress" id="shutter-progress" cx="50" cy="50" r="45"/>
         </svg>
       </button>
-      <button class="icon-btn icon-btn--sm" id="btn-fullscreen" type="button" aria-label="Full screen">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+      <button class="icon-btn icon-btn--sm" id="btn-guide" type="button" aria-label="16:9 framing guide" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="2.5" y="4" width="19" height="16" rx="1.6"/>
+          <path class="icon-btn__dash" d="M2.5 8.5h19M2.5 15.5h19"/>
+        </svg>
+        <span class="icon-btn__caption" id="guide-label">16:9</span>
       </button>
     </div>
 
@@ -149,7 +168,7 @@
           <path class="rotate__arrow" d="M48 44a20 20 0 0 1-20 14"/>
           <path class="rotate__arrow" d="M31 54l-4 4 4 4"/>
         </svg>
-        <p class="rotate__text">Rotate your phone to portrait to record.</p>
+        <p class="rotate__text">Hold your phone upright to record.</p>
       </div>
     </div>
   </section>
@@ -183,7 +202,7 @@
         <div class="hud hud--playback">
           <div class="hud__row hud__row--top">
             <span class="hud__timer" id="pb-time">00:00</span>
-            <span class="hud__tag" id="pb-meta">1:1.43 · 70MM</span>
+            <span class="hud__tag" id="pb-meta">1.43:1 · 70MM</span>
           </div>
         </div>
         <div class="scrub"><i id="scrub-fill"></i></div>

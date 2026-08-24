@@ -6,11 +6,18 @@
  * Shooting records the raw camera stream untouched — no shader, no
  * heat, no lag; see Recorder + main.js. All of the actual film
  * pipeline runs here, once, after the shutter is released: the raw
- * recording is played back through FilmRenderer (the grade) and
- * composited onto a strip of film — sprocket perforations top and
- * bottom, the picture kept in whatever orientation it was actually
- * shot in — on a plain 2D canvas, which is what gets re-encoded
- * through the same Recorder class shooting uses.
+ * recording is played back through FilmRenderer, which grades it and
+ * draws the sprocket bars around it on one WebGL canvas, and that
+ * canvas is what gets re-encoded through the same Recorder class
+ * shooting uses.
+ *
+ * "One canvas" is load-bearing. This used to grade onto an offscreen
+ * WebGL canvas and then copy the result into a second, 2D canvas
+ * that carried the sprocket border — a whole extra full-frame copy
+ * per frame, inside a budget that already has to fit a decode, a
+ * grade and an encode into one frame interval. Miss that budget and
+ * the captured stream starts repeating frames, which is exactly the
+ * judder the develop pass exists to avoid.
  *
  * That means developing takes about as long as the take itself (a
  * 3-minute take takes roughly 3 minutes to develop) — the trade for
@@ -88,20 +95,20 @@ export class Developer {
     // for the final recording — see _buildAudioTrack().
     this.audioCtx = null;
 
-    // The grade, offscreen — never appended to the document either.
-    this.gradeCanvas = document.createElement('canvas');
+    // The one canvas: the grade and the sprocket border both land
+    // here, and this is what MediaRecorder captures. It *is* meant
+    // to be shown — the caller can mount it wherever the
+    // "Developing" screen wants a live preview — but nothing here
+    // requires it to be in the document.
+    this.exportCanvas = document.createElement('canvas');
     this.renderer = null;
 
-    // What actually gets recorded: the graded frame blitted onto a
-    // strip of film. This one *is* meant to be shown — the caller
-    // can mount it wherever the "Developing" screen wants a live
-    // preview — but nothing here requires it to be in the document.
-    this.exportCanvas = document.createElement('canvas');
-    this.ctx = this.exportCanvas.getContext('2d');
-    this.barHeight = 0;
+    /** The capture track, when this engine lets us clock it by hand
+     *  — see _captureStream(). */
+    this._captureTrack = null;
 
     this.recorder = new Recorder(
-      { getStream: (fps) => this.exportCanvas.captureStream(fps) },
+      { getStream: (fps) => this._captureStream(fps) },
       {
         onStop: (result) => this._onRecorderStop(result),
         onError: (err) => { this._cleanup(); this._rejectFinal?.(err); },
@@ -110,12 +117,13 @@ export class Developer {
 
     this._driving = false;
     this._rvfcHandle = 0;
-    this._barsDrawn = false;
     this._durationMs = 1;
+    this._gradedFrames = 0;
+    this._gradingStartedAt = 0;
 
     // Rare on a mobile GPU under memory pressure, but developing can
     // run for minutes — long enough to actually hit it.
-    this.gradeCanvas.addEventListener('webglcontextlost', (e) => {
+    this.exportCanvas.addEventListener('webglcontextlost', (e) => {
       e.preventDefault();
       this._cleanup();
       this._rejectFinal?.(new Error('The graphics context was lost while developing.'));
@@ -154,12 +162,13 @@ export class Developer {
     this._filmStripImg = filmStripImg;
     await this._fixDuration(v);
 
-    this.renderer = new FilmRenderer(this.gradeCanvas, this.look);
+    this.renderer = new FilmRenderer(this.exportCanvas, this.look);
     // Synced to the footage's own clock, not wall time, so gate
     // weave/breathing/grain phase are deterministic and unaffected
     // by any pause/resume while backgrounded.
     this.renderer.startedAt = 0;
     this.renderer.setQuality(this.quality);
+    this.renderer.setFilmStrip(filmStripImg);
     this.renderer.setDigitalZoom(this.digitalZoom);
     this.renderer.setSteady(this.steady);
     this.renderer.setSource(v);
@@ -185,6 +194,8 @@ export class Developer {
       maxMs: this._durationMs + 8000,
     });
 
+    this._gradedFrames = 0;
+    this._gradingStartedAt = performance.now();
     this._startPump();
     v.addEventListener('ended', () => this._finish(), { once: true });
   }
@@ -215,22 +226,45 @@ export class Developer {
     });
   }
 
-  /** Render frames until the first real one lands, so the export
-   *  canvas can be sized correctly before captureStream() locks a
-   *  track to it. */
+  /** Render frames until the first real one lands, so the canvas is
+   *  sized — picture plus both bars — before captureStream() locks a
+   *  track to its dimensions. */
   _prime() {
     return new Promise((resolve) => {
       const attempt = () => {
-        if (this.renderer.render(0)) {
-          this._drawBars();
-          this._blitFrame();
-          resolve();
-        } else {
-          requestAnimationFrame(attempt);
-        }
+        if (this.renderer.render(0)) resolve();
+        else requestAnimationFrame(attempt);
       };
       attempt();
     });
+  }
+
+  /**
+   * The stream MediaRecorder encodes.
+   *
+   * Clocked by hand where the engine allows it — captureStream(0)
+   * emits nothing until requestFrame() asks, and _tick() asks
+   * exactly once per graded frame. That one-to-one guarantee is the
+   * point. Given a frame rate instead, the capture runs on its own
+   * 30Hz clock while the grade runs on the raw take's, and two
+   * independent 30Hz clocks beat against each other: periodically
+   * the capture samples a canvas nothing has redrawn (a duplicated
+   * frame) and then misses one that was (a dropped frame). Neither
+   * clock is late — the footage still stutters, and it stutters
+   * most visibly on exactly the fast movement that makes a repeated
+   * frame obvious.
+   *
+   * Falling back to a fixed rate is only for engines with no
+   * requestFrame at all, where a beat is better than no frames.
+   */
+  _captureStream(fps) {
+    const canvas = this.exportCanvas;
+    const manual = typeof window.CanvasCaptureMediaStreamTrack !== 'undefined' &&
+                   typeof window.CanvasCaptureMediaStreamTrack.prototype.requestFrame === 'function';
+    const stream = canvas.captureStream(manual ? 0 : fps);
+    const track = stream.getVideoTracks()[0];
+    this._captureTrack = (manual && typeof track?.requestFrame === 'function') ? track : null;
+    return stream;
   }
 
   /**
@@ -297,7 +331,9 @@ export class Developer {
 
   _tick(mediaMs) {
     if (!this.renderer.render(mediaMs)) return;
-    this._blitFrame();
+    // One graded frame, one encoded frame — see _captureStream().
+    this._captureTrack?.requestFrame();
+    this._gradedFrames++;
 
     // Progress is reported a few times a second, not thirty. The
     // develop pass has a real frame budget — decode, grade, blit and
@@ -321,43 +357,6 @@ export class Developer {
     if (mediaMs >= this._durationMs) this._finish();
   }
 
-  /* =============================================================
-     THE FILM-STRIP FRAME
-     ============================================================= */
-  _drawBars() {
-    const gw = this.renderer.width;
-    const gh = this.renderer.height;
-    if (!gw || !gh) return;
-
-    const bar = Math.round(gw * EXPORT_FRAME.barRatio);
-    this.barHeight = bar;
-    this.exportCanvas.width = gw;
-    this.exportCanvas.height = gh + bar * 2;
-
-    // The artwork is scaled from its own native pixels up to the
-    // take's actual width — never stretched to some other aspect —
-    // so the video underneath keeps its exact recorded dimensions.
-    const ctx = this.ctx;
-    const img = this._filmStripImg;
-    const iw = EXPORT_FRAME.imageWidth;
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(img, 0, 0, iw, EXPORT_FRAME.topBarHeight, 0, 0, gw, bar);
-    ctx.drawImage(
-      img,
-      0, EXPORT_FRAME.imageHeight - EXPORT_FRAME.bottomBarHeight, iw, EXPORT_FRAME.bottomBarHeight,
-      0, gh + bar, gw, bar
-    );
-
-    this._barsDrawn = true;
-  }
-
-  /** The bars never change once drawn, so only the video window is
-   *  redrawn per frame — the canvas is never cleared. */
-  _blitFrame() {
-    this.ctx.drawImage(this.gradeCanvas, 0, this.barHeight, this.renderer.width, this.renderer.height);
-  }
-
   _finish() {
     this._stopPump();
     this.onProgress?.(1);   // the throttle above may never have hit 100
@@ -367,9 +366,17 @@ export class Developer {
   _onRecorderStop({ blob, mimeType, durationMs }) {
     const width = this.exportCanvas.width;
     const height = this.exportCanvas.height;
+    // How many frames a second the lab actually managed. The raw
+    // take plays back in real time, so anything meaningfully under
+    // FORMAT.FPS means the grade could not keep up with the footage
+    // and frames went past ungraded — the one failure mode that
+    // shows up as judder in the finished film rather than as an
+    // error. Reported rather than hidden so the caller can say so.
+    const elapsed = performance.now() - this._gradingStartedAt;
+    const developedFps = elapsed > 0 ? (this._gradedFrames * 1000) / elapsed : 0;
     this._cleanup();
     if (this._cancelled) return;
-    this._resolveFinal?.({ blob, mimeType, durationMs, width, height });
+    this._resolveFinal?.({ blob, mimeType, durationMs, width, height, developedFps });
   }
 
   /* =============================================================
@@ -406,7 +413,7 @@ export class Developer {
       try { this.renderer.destroy(); } catch { /* already gone */ }
       this.renderer = null;
     }
-    this._barsDrawn = false;
+    this._captureTrack = null;
   }
 
   /** Abort mid-development — the app backgrounded past recovery, or

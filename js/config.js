@@ -17,32 +17,61 @@
    FORMAT
    ---------------------------------------------------------------
    ASPECT is width ÷ height and is the single source of truth for
-   the whole app: the shader crop, the canvas dimensions, the CSS
-   gate, which way the phone must be held, and the orientation the
-   manifest asks for all derive from it.
+   the shape of the picture: the shader crop, the canvas dimensions
+   and the CSS gate all derive from it.
 
-   Set it above 1 for a landscape gate, below 1 for a portrait one.
-   Nothing else needs to change.
+     1.43       the projected 15/70 IMAX aperture (70.41 × 49.15 mm)
+                — wider than it is tall, as projected film is
+     1 / 1.43   the tall gate this app used to shoot
 
-     1 / 1.43   tall gate  (current — portrait)
-     1.43       wide gate  (the projected 15/70 IMAX aperture,
-                            70.41 × 49.15 mm)
+   SHOOT_ORIENTATION is deliberately *not* derived from it any more.
+   The two used to be the same question — a gate taller than it is
+   wide can only be shot upright — but a wide gate does not have to
+   be shot sideways. We take the wide frame as a centre band out of
+   an upright phone's sensor instead, so the operator keeps holding
+   the phone the way they actually hold a phone and the file still
+   comes out landscape. What that costs is horizontal reach: the
+   band is only as wide as the phone's short axis, so a shot frames
+   tighter than the same lens held sideways would. CAPTURE below is
+   sized to pay for that in resolution, and 0.5× pays for it in
+   focal length.
    =============================================================== */
 export const FORMAT = {
-  ASPECT: 1 / 1.43,
+  ASPECT: 1.43,
 
   /** How the ratio is written in the HUD. */
   LABEL: '1.43:1',
 
   /**
-   * Longest edge of the recorded frame, in pixels — the *long*
-   * edge, not the width, so a portrait gate does not end up 1920 ×
-   * 2746 and blow past what mobile hardware encoders accept. At
-   * 1:1.43 this yields 1342 × 1920, a shade over 1080p portrait in
-   * pixel count and comfortably inside the H.264 envelope phones
-   * sustain at 30fps without thermal throttling.
+   * Longest edge of the recorded frame, in pixels. At 1.43:1 this
+   * yields 1920 × 1342 at most — comfortably inside the H.264
+   * envelope phones sustain at 30fps without thermal throttling.
    */
   MAX_LONG_EDGE: 1920,
+
+  /**
+   * What we ask the sensor for, written the way an upright phone
+   * reports it.
+   *
+   * This matters more than it used to. The gate is now a wide band
+   * cropped out of an upright frame, so the *width* of the finished
+   * film is the phone's short axis — whatever number lands in
+   * CAPTURE.WIDTH is very nearly the export's own width, and there
+   * is nothing downstream that can put back resolution the sensor
+   * was never asked for. 1440 × 1920 is the 4:3-ish sensor mode
+   * most phones offer: 2.8MP, only a third more than the 1080p this
+   * used to request, and it also tends to be the mode that reads
+   * the full sensor width rather than a 16:9 crop of it — which is
+   * exactly the axis a wide gate is short of.
+   *
+   * Both are `ideal`. A platform that hands back a landscape track
+   * instead (some Android builds do, regardless of how the phone is
+   * held) still works: the crop is aspect-driven, not axis-driven.
+   */
+  CAPTURE: {
+    WIDTH: 1440,
+    HEIGHT: 1920,
+  },
 
   /** Preview render scale relative to the recording resolution. */
   PREVIEW_SCALE: 1.0,
@@ -69,14 +98,34 @@ export const FORMAT = {
 };
 
 /**
- * The device orientation the gate requires. A frame taller than it
- * is wide can only be shot with the phone held upright.
+ * How the phone is held. Upright, always — see the note above. This
+ * is what the orientation guard enforces and what drives the CSS
+ * layout, because it describes where the leftover screen is, which
+ * is where the controls go.
  */
-export const GATE_ORIENTATION = FORMAT.ASPECT >= 1 ? 'landscape' : 'portrait';
+export const SHOOT_ORIENTATION = 'portrait';
 
 /** The orientation the operator is told to rotate *to*. */
-export const ROTATE_PROMPT =
-  `Rotate your phone to ${GATE_ORIENTATION} to record.`;
+export const ROTATE_PROMPT = 'Hold your phone upright to record.';
+
+/* ===============================================================
+   FRAMING GUIDE
+   ---------------------------------------------------------------
+   A 1.43 gate is taller than every screen the finished film is
+   likely to be shown on. The guide draws where a 16:9 camera
+   pointed at the same scene would have cut — same width, less
+   height — so a shot can be composed to survive the crop.
+
+   Same width and not same height because that is the honest
+   comparison: two cameras behind the same lens see the same
+   horizontal field, and the wider format is the one that keeps
+   more picture above and below.
+   =============================================================== */
+export const GUIDE = {
+  /** The reference format the guide marks out. */
+  ASPECT: 16 / 9,
+  LABEL: '16:9',
+};
 
 /* ===============================================================
    RECORDING
@@ -236,11 +285,26 @@ export const LOOK = {
      frame's own gate transform, so it smears real subject motion
      rather than doubling up hand shake.
 
-       0    electronic shutter — every frame frozen (old behaviour)
-       180  the cine standard
+     What this cannot do is *smear*. A real shutter integrates
+     continuously; two frames give us two samples, so what actually
+     lands is the previous picture as a discrete ghost one whole
+     frame (33ms) back, at the mix weight. At 180° that weight is
+     0.25, and on anything moving quickly through the frame a
+     quarter-strength copy displaced by a full frame does not read
+     as motion blur — it reads as a double image, as if the frames
+     could not keep up. That is why the default sits at 90° now
+     rather than the cine-standard 180: half the weight, half as
+     visible a second copy, and still enough integration that
+     movement is not the run of frozen stills a phone sensor hands
+     back. Take it to 180 for the full effect on slower subjects;
+     take it to 0 for the sensor's own razor-sharp frames.
+
+       0    electronic shutter — every frame frozen
+       90   two samples' worth of integration without the ghost
+       180  the cine standard; the strongest double image
        360  open shutter; heavy smear, rarely wanted */
   shutter: {
-    angle: 180,        // degrees, 0…360
+    angle: 90,         // degrees, 0…360
   },
 
   /* --- Lens ----------------------------------------------------
@@ -366,49 +430,88 @@ export const QUALITY = {
 /* ===============================================================
    EXPORT FRAME
    ---------------------------------------------------------------
-   The saved file isn't just the graded gate — it's composited onto
-   a strip of film: the graded image, kept in whatever orientation
-   it was actually shot in, with a row of sprocket perforations
+   The saved file isn't just the graded gate — it's a strip of film:
+   the graded 1.43:1 picture with a row of sprocket perforations
    above and below. Baked into the pixels once, during developing,
    so it's identical in the in-app player, the gallery, and whatever
    lands in Photos.
+
+   The bars are thin on purpose, and this is the number that decides
+   whether the export is landscape at all. A 1.43:1 picture is 0.699
+   of its own width tall; two bars of ratio r add 2r on top of that,
+   so the finished strip is landscape only while r < 0.15. The old
+   portrait artwork ran two 0.32 bars — nearly two thirds of the
+   frame — which is why the file came out taller than the picture
+   inside it. 0.063 keeps the strip comfortably wide and is close to
+   the real thing: on 15/70 stock the perforated margin is about
+   8.7mm either side of a 70.41mm-wide image.
    =============================================================== */
 export const EXPORT_FRAME = {
-  /** Border artwork: sprockets plus "70mm" / "LARGE FORMAT CAMERA"
-   *  branding, baked top and bottom. This is a border, not a mask —
-   *  the video is composited into the middle at its own native
-   *  size, never cropped or stretched to fit the artwork, so the
-   *  saved file is the graded take at full resolution with a frame
-   *  around it (crop the frame out and you're left with just the
-   *  take). */
+  /** Border artwork: the sprocket rows, baked top and bottom. This
+   *  is a border, not a mask — the video is composited into the
+   *  middle at its own native size, never cropped or stretched to
+   *  fit the artwork, so the saved file is the graded take at full
+   *  resolution with a frame around it. */
   image: 'assets/film-strip.png',
 
-  /** Pixel geometry of that artwork (currently 1086 × 1448). Each bar
-   *  runs the artwork's full width; only its height differs top to
-   *  bottom. Re-measure if the asset is ever re-exported at a
-   *  different size — these are source-pixel bounds, not fractions. */
-  imageWidth: 1086,
-  imageHeight: 1448,
-  topBarHeight: 349,     // rows 0..349
-  bottomBarHeight: 354,  // rows 1094..1448
+  /** Pixel geometry of that artwork. Each bar runs the artwork's
+   *  full width; only its height is measured here.
+   *
+   *  These are read as *proportions*, not as absolute pixels: the
+   *  loader scales them by the image's real natural width, so
+   *  re-exporting the same layout at any resolution needs no change
+   *  here. Only re-measure if the bars' depth relative to the
+   *  artwork's width actually changes.
+   *
+   *  Reference layout (assets/film-strip.png):
+   *    2288 × 1888   whole strip
+   *      0 …  143    top bar        (144px)
+   *    144 … 1743    picture window (2288 × 1600 — exactly 1.43:1,
+   *                  never drawn; the graded frame goes here)
+   *   1744 … 1887    bottom bar     (144px)
+   */
+  imageWidth: 2288,
+  imageHeight: 1888,
+  topBarHeight: 144,
+  bottomBarHeight: 144,
 
-  /** Each bar's on-canvas height, as a fraction of the frame width —
-   *  tied to width (not height) so the artwork is scaled uniformly
-   *  from its own native size, never stretched, regardless of the
-   *  gate's own aspect. Derived from topBarHeight / imageWidth. */
-  barRatio: 349 / 1086,
+  /** Each bar's on-canvas height as a fraction of the picture's
+   *  width — tied to width, not height, so the artwork is scaled
+   *  uniformly from its own native size and never stretched. */
+  barRatio: 144 / 2288,
+};
+
+/* ===============================================================
+   SAVE
+   ---------------------------------------------------------------
+   The shape of the *file itself* — separate from FORMAT.ASPECT,
+   which is the shape of the picture inside it. The picture is wide
+   (1.43:1) so it looks like real IMAX; the container is vertical so
+   the file opens right-way-up on a phone, in Photos and in any
+   vertical-video feed, with no rotation needed to watch it. The
+   strip (picture + sprocket bars) is centred in the middle at full
+   native resolution — nothing about the picture is scaled down to
+   make room — with plain black letterboxing filling the rest.
+
+   9:16 rather than the raw sensor's own 3:4 (FORMAT.CAPTURE) because
+   9:16 is the shape every vertical-video surface actually expects —
+   Photos, Reels, Shorts, TikTok, iMessage — so the file fills the
+   screen instead of pillarboxing a second time inside whatever plays
+   it back.
+   =============================================================== */
+export const SAVE = {
+  ASPECT: 9 / 16,
 };
 
 /**
  * The finished aspect ratio (width ÷ height) of a developed take —
- * the gate plus two sprocket bars. Derived, not measured: barRatio
- * is defined relative to width, and gate height is itself a
- * function of FORMAT.ASPECT, so this reduces to a constant with no
- * dependency on any particular take's actual pixel dimensions.
- * Mirrored as --export-aspect in main.css for the playback frame
- * and the gallery thumbnails.
+ * the whole saved file, letterboxing included. This is what a take
+ * actually measures as once encoded, so it is SAVE.ASPECT, not a
+ * measurement of the picture or the strip inside it. Mirrored as
+ * --export-aspect in main.css for the playback frame and the
+ * gallery thumbnails.
  */
-export const EXPORT_ASPECT = 1 / (1 / FORMAT.ASPECT + 2 * EXPORT_FRAME.barRatio);
+export const EXPORT_ASPECT = SAVE.ASPECT;
 
 /* ===============================================================
    ZOOM
@@ -438,4 +541,8 @@ export const PREFS = {
   haptics: true,
   /** Steadicam on by default — see STEADY. */
   steady: true,
+  /** The 16:9 framing guide — see GUIDE. Off by default: it is an
+   *  aid for a shot you already know will be re-cropped, not
+   *  furniture the viewfinder should always carry. */
+  guide: false,
 };

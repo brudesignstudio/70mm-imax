@@ -1,0 +1,87 @@
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>lab test</title>
+<style>body{background:#111;color:#0f0;font:12px monospace;padding:12px}
+canvas{border:1px solid #444;max-height:70vh;display:block;margin:10px 0}</style></head><body>
+<pre id="log"></pre>
+<script type="module">
+import { FORMAT, SAVE, EXPORT_ASPECT, EXPORT_FRAME, LOOK } from './js/config.js';
+import { FilmRenderer } from './js/components/FilmRenderer.js';
+
+const el = document.getElementById('log');
+const log = (...a) => { el.textContent += a.join(' ') + '\n'; };
+let fails = 0;
+const check = (name, got, want) => {
+  const ok = got === want; if (!ok) fails++;
+  log((ok ? '  ok  ' : ' FAIL ') + name + ': ' + got + (ok ? '' : '  (expected ' + want + ')'));
+};
+
+function fakeSource(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = '#204060'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#ffcc22'; g.fillRect(w * 0.1, h * 0.35, w * 0.8, h * 0.3);
+  g.fillStyle = '#fff'; g.font = (w / 9) + 'px monospace';
+  g.fillText('UPRIGHT', w * 0.12, h * 0.52);
+  g.fillStyle = '#e33'; g.fillRect(0, 0, w, 12); g.fillRect(0, h - 12, w, 12);
+  Object.defineProperty(c, 'videoWidth',  { get: () => w });
+  Object.defineProperty(c, 'videoHeight', { get: () => h });
+  Object.defineProperty(c, 'readyState',  { get: () => 4 });
+  return c;
+}
+
+const strip = new Image();
+strip.src = EXPORT_FRAME.image;
+strip.onload = () => {
+  log('SAVE.ASPECT=' + SAVE.ASPECT.toFixed(4) + '  EXPORT_ASPECT=' + EXPORT_ASPECT.toFixed(4));
+  check('EXPORT_ASPECT === SAVE.ASPECT', EXPORT_ASPECT, SAVE.ASPECT);
+  log('');
+
+  const canvas = document.createElement('canvas');
+  const r = new FilmRenderer(canvas, LOOK);
+  r.setQuality('high');
+  r.setFilmStrip(strip);
+  r.setSteady(true);
+
+  log('— upright phone, 1440×1920 sensor —');
+  r.setSource(fakeSource(1440, 1920));
+  r.render(0);
+  const stripH = r.height + r.barHeight * 2;
+  log('picture   : ' + r.width + '×' + r.height);
+  log('bar       : ' + r.barHeight + 'px  → strip ' + r.width + '×' + stripH);
+  log('letterboxY: ' + r.letterboxY + 'px  (top == bottom, by construction)');
+  log('canvas    : ' + canvas.width + '×' + canvas.height +
+      '  aspect ' + (canvas.width / canvas.height).toFixed(4));
+
+  check('canvas is PORTRAIT (taller than wide)', canvas.width < canvas.height, true);
+  check('canvas aspect ≈ SAVE.ASPECT (±1 rounded px)',
+        Math.abs(canvas.width / canvas.height - SAVE.ASPECT) < 0.001, true);
+  check('picture width unchanged (full native res, no scale-down)', r.width, 1440);
+  check('picture is still 1.43:1', (r.width / r.height).toFixed(2), FORMAT.ASPECT.toFixed(2));
+  check('strip vertically centred: 2×letterboxY + stripH == canvasH',
+        2 * r.letterboxY + stripH, canvas.height);
+  check('even canvas dimensions', canvas.width % 2 === 0 && canvas.height % 2 === 0, true);
+
+  document.body.appendChild(canvas);
+
+  // --- pixel probes: letterbox / bar / picture, top to bottom -----
+  const g2 = document.createElement('canvas');
+  g2.width = canvas.width; g2.height = canvas.height;
+  const cx = g2.getContext('2d');
+  cx.drawImage(canvas, 0, 0);
+  const px = (x, y) => { const d = cx.getImageData(x, y, 1, 1).data; return d[0] + ',' + d[1] + ',' + d[2]; };
+  const midX = canvas.width >> 1;
+  log('\ntop letterbox   y=4                = ' + px(midX, 4));
+  log('top bar         y=' + (r.letterboxY + 10) + '            = ' + px(midX + 300, r.letterboxY + 10));
+  log('picture         y=' + (canvas.height >> 1) + '            = ' + px(midX, canvas.height >> 1));
+  log('bottom bar      y=' + (canvas.height - r.letterboxY - 10) + '           = ' +
+      px(midX + 300, canvas.height - r.letterboxY - 10));
+  log('bottom letterbox y=' + (canvas.height - 4) + '           = ' + px(midX, canvas.height - 4));
+
+  check('top letterbox is black',    px(midX, 2),                     '0,0,0');
+  check('bottom letterbox is black', px(midX, canvas.height - 2),     '0,0,0');
+  check('picture centre is NOT black', px(midX, canvas.height >> 1) !== '0,0,0', true);
+
+  log('\n' + (fails ? fails + ' FAILURE(S)' : 'ALL CHECKS PASSED'));
+};
+strip.onerror = () => log('FAILED to load ' + EXPORT_FRAME.image);
+</script></body></html>

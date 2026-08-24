@@ -14,7 +14,7 @@
  * during "processing" — see components/Developer.js.
  */
 
-import { FORMAT, RECORDING, GATE_ORIENTATION, ROTATE_PROMPT, ZOOM } from './config.js';
+import { FORMAT, RECORDING, SHOOT_ORIENTATION, ROTATE_PROMPT, ZOOM, GUIDE } from './config.js';
 import { $, $$, on, toast } from './utils/dom.js';
 import { clock, clamp } from './utils/format.js';
 import { has, isSecure, isIOS, report, pickMimeType } from './utils/capabilities.js';
@@ -55,19 +55,26 @@ class App {
     this.recorder = null;
     this.histogram = null;
 
-    // The gate's shape drives the layout and the orientation the
-    // operator is held to; both come from FORMAT.ASPECT.
-    this.app.setAttribute('data-gate', GATE_ORIENTATION);
+    // Two separate facts now. The picture is wide (FORMAT.ASPECT);
+    // the phone is held upright (SHOOT_ORIENTATION). data-gate
+    // carries the second one, because what the layout needs to know
+    // is where the leftover screen is — and with a wide band on an
+    // upright phone, that is above and below.
+    this.app.setAttribute('data-gate', SHOOT_ORIENTATION);
     $('.rotate__text').textContent = ROTATE_PROMPT;
     $('#tag-format').textContent = `${FORMAT.LABEL} · 70MM`;
     $('#pb-meta').textContent = `${FORMAT.LABEL} · 70MM`;
 
-    // iOS Safari on iPhone implements no Fullscreen API for
-    // arbitrary elements, so there is nothing for the button to do.
-    $('#btn-fullscreen').hidden = !has.fullscreen;
+    // The 16:9 guide sits where the fullscreen button used to.
+    // Fullscreen was never much of a control — it does nothing at
+    // all on iOS Safari, which implements no Fullscreen API for
+    // arbitrary elements, and the shutter already asks for it
+    // silently on every take (see toggleRecord).
+    $('#guide-label').textContent = GUIDE.LABEL;
+    this.setGuide(this.settings.prefs.guide === true);
 
     this.gateFit = new GateFit().attachAll();
-    this.orientation = new OrientationGuard((o) => this.onOrientation(o), GATE_ORIENTATION);
+    this.orientation = new OrientationGuard((o) => this.onOrientation(o), SHOOT_ORIENTATION);
 
     this.gallery = new Gallery({
       onOpen: (take) => this.openTake(take),
@@ -140,7 +147,11 @@ class App {
     on($('#btn-begin'), 'click', () => this.begin());
     on($('#btn-record'), 'click', () => this.toggleRecord());
     on($('#btn-settings'), 'click', () => { this.settings.open(); this.updateReadout(); });
-    on($('#btn-fullscreen'), 'click', () => this.toggleFullscreen());
+    on($('#btn-guide'), 'click', () => {
+      this.setGuide(!this._guideOn);
+      haptic('tick');
+      if (this._guideOn) toast(`${GUIDE.LABEL} guide on — anything outside the lines is lost to a widescreen crop.`, 2600);
+    });
 
     on($('#btn-gallery'), 'click', async () => {
       await this.gallery.refresh();
@@ -277,6 +288,33 @@ class App {
   applyPrefs(prefs) {
     setHapticsEnabled(prefs.haptics);
     this.histogram?.setEnabled(prefs.histogram);
+    this.setGuide(prefs.guide === true);
+  }
+
+  /**
+   * The 16:9 framing guide.
+   *
+   * Two hairlines across the gate marking where a 16:9 camera
+   * behind the same lens would have cut — full width, GUIDE.ASPECT
+   * tall, centred. It is a viewfinder overlay and nothing else: it
+   * is never composited into a frame, never recorded, and never
+   * survives into a developed take, so a shot framed with it on and
+   * a shot framed with it off come out of the lab identical.
+   *
+   * The geometry lives in CSS (--guide-band) rather than in JS
+   * because the gate is already an exactly-measured box — the band
+   * is a fixed percentage of it and does not need re-measuring when
+   * the box changes size.
+   */
+  setGuide(on) {
+    this._guideOn = !!on;
+    this.app.setAttribute('data-guide', this._guideOn ? 'true' : 'false');
+    const btn = $('#btn-guide');
+    if (btn) btn.setAttribute('aria-pressed', this._guideOn ? 'true' : 'false');
+    if (this.settings.prefs.guide !== this._guideOn) {
+      this.settings.prefs.guide = this._guideOn;
+      this.settings._savePrefs();
+    }
   }
 
   async warnIfStorageTight() {
@@ -317,7 +355,7 @@ class App {
      ORIENTATION
      ============================================================= */
   onOrientation(o) {
-    const ok = o === GATE_ORIENTATION;
+    const ok = o === SHOOT_ORIENTATION;
     this.app.setAttribute('data-orientation', o);
     // One flag drives the lockout, the preview blur and the
     // shutter, so the layout never has to know which orientation
@@ -330,7 +368,7 @@ class App {
     if (!ok && this.recorder?.isRecording) {
       this.recorder.stop('interrupt');
       haptic('error');
-      toast(`Recording stopped — the camera left ${GATE_ORIENTATION}.`);
+      toast('Recording stopped — the phone was turned on its side.');
     }
   }
 
@@ -343,7 +381,7 @@ class App {
     btn.setAttribute('aria-label',
       this.recorder?.isRecording ? 'Stop recording'
       : ready ? 'Start recording'
-      : `Rotate to ${GATE_ORIENTATION} to record`);
+      : 'Hold the phone upright to record');
   }
 
   /* =============================================================
@@ -456,6 +494,18 @@ class App {
     sub.textContent = 'Filing the reel…';
     const thumb = await captureThumbnail(developer.exportCanvas);
     this.developer = null;
+
+    // The lab reports how many frames a second it actually managed.
+    // The raw take replays in real time, so falling meaningfully
+    // short of FORMAT.FPS means frames went past ungraded and the
+    // finished film will judder — the one failure here that is
+    // invisible until you watch it back. Say so, with the lever
+    // that fixes it, rather than letting it read as a bad camera.
+    if (result.developedFps && result.developedFps < FORMAT.FPS * 0.85) {
+      toast(
+        `The lab ran at ${Math.round(result.developedFps)}fps of ${FORMAT.FPS} — ` +
+        'lower Quality in Settings for smoother motion.', 5200);
+    }
 
     const take = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -701,28 +751,18 @@ class App {
      FULLSCREEN + WAKE LOCK
      ============================================================= */
   async enterFullscreen() {
-    // Limitation: iOS Safari on iPhone implements no Fullscreen API
-    // for arbitrary elements — only <video>. Installing the PWA to
-    // the home screen is the supported way to get a full-bleed,
-    // chrome-free camera there, which is why the manifest sets
-    // display: fullscreen, and why the button is hidden there
-    // rather than shown failing.
+    // Best-effort only, and called from the shutter rather than
+    // from a control of its own. Limitation: iOS Safari on iPhone
+    // implements no Fullscreen API for arbitrary elements — only
+    // <video> — so this simply does nothing there. Installing the
+    // PWA to the home screen is the supported way to get a
+    // full-bleed, chrome-free camera on iOS, which is why the
+    // manifest sets display: fullscreen.
     const target = document.documentElement;
     const request = target.requestFullscreen || target.webkitRequestFullscreen;
     if (!request || document.fullscreenElement) return false;
     await request.call(target, { navigationUI: 'hide' });
     return true;
-  }
-
-  async toggleFullscreen() {
-    const exit = document.exitFullscreen || document.webkitExitFullscreen;
-    if (document.fullscreenElement || document.webkitFullscreenElement) {
-      await exit?.call(document);
-      this.orientation.unlock();
-      return;
-    }
-    const ok = await this.enterFullscreen().catch(() => false);
-    if (ok) this.orientation.lock();
   }
 
   async requestWakeLock() {

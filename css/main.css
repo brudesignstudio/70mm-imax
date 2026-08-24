@@ -62,12 +62,23 @@
   /* Gate aspect, mirrored from FORMAT.ASPECT in config.js. Only a
      pre-script fallback — GateFit sets exact pixels — but it must
      agree, or the frame jumps on first paint. */
-  --gate-aspect: 1 / 1.43;
+  --gate-aspect: 1.43;
 
-  /* A developed take's aspect: the gate plus two sprocket bars,
-     mirrored from EXPORT_ASPECT in config.js. Same pre-script-fallback
-     reasoning as --gate-aspect above. */
-  --export-aspect: 1 / 2.0744;
+  /* A developed take's own aspect — the whole saved file, sprocket
+     bars and vertical letterboxing included — mirrored from
+     EXPORT_ASPECT (= SAVE.ASPECT) in config.js. Vertical on purpose:
+     the picture inside is wide, but the file itself is a 9:16
+     container so it opens right-way-up on a phone. Same
+     pre-script-fallback reasoning as --gate-aspect above. */
+  --export-aspect: 0.5625;
+
+  /* The 16:9 framing guide's band, as a share of the gate's own
+     height: (1 / 1.7778) ÷ (1 / 1.43). Two cameras behind the same
+     lens see the same width, so the narrower format is simply
+     shorter — 80.44% of a 1.43:1 frame, leaving 9.78% lost off the
+     top and the same off the bottom. Mirrored from GUIDE.ASPECT. */
+  --guide-band: 80.4375%;
+  --guide-inset: 9.78125%;
 }
 
 body {
@@ -290,6 +301,48 @@ body {
 .gate__mark--br { bottom: 10px; right: 10px; border-left: 0; border-top: 0; }
 
 /* ============================================================
+   16:9 FRAMING GUIDE
+   ------------------------------------------------------------
+   Where a widescreen camera behind this same lens would have cut.
+   Hairlines rather than a mask: the operator still has to see the
+   picture outside them to know what they are giving up, so the
+   band is marked, not the loss. The faint surround is one spread
+   box-shadow — enough to read which side of the line is safe,
+   nowhere near enough to grade by.
+
+   Viewfinder only. Nothing here exists on the record path: the
+   develop pass reads the raw camera file, not the DOM.
+   ============================================================ */
+.guide {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 220ms var(--ease);
+}
+.app[data-guide="true"] .guide { opacity: 1; }
+
+.guide__band {
+  position: absolute;
+  left: 0; right: 0;
+  top: var(--guide-inset);
+  height: var(--guide-band);
+  border-top: 1px solid rgba(255, 255, 255, 0.62);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.62);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.30);
+}
+.guide__tag {
+  position: absolute;
+  top: 5px; left: 8px;
+  font-family: var(--mono);
+  font-size: 8.5px;
+  font-weight: 400;
+  letter-spacing: 0.18em;
+  color: rgba(255, 255, 255, 0.72);
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+
+/* ============================================================
    HUD
    ============================================================ */
 .hud {
@@ -309,6 +362,47 @@ body {
      the text itself being blurry. Small radius, high opacity. */
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 1px rgba(0, 0, 0, 0.95);
 }
+
+/* ---- the camera HUD, out of the picture ---------------------
+   On the camera screen the readouts and the manual controls are
+   siblings of the gate rather than an overlay on it: a 1.43:1
+   frame on an upright phone is always limited by the phone's
+   width, so there is a great deal of screen above and below it
+   and no reason to compose a shot through a layer of chips. The
+   stage becomes a centred column — top row, gate, bottom row —
+   which also means the rows hug the frame instead of drifting to
+   the extremes of the surround. Safe because that gate can never
+   be the tall one: 1.43 wide in a portrait viewport is width-
+   limited by definition, so there is always height to spare for
+   the two rows. */
+.screen--camera .stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+.screen--camera .hud {
+  position: static;
+  inset: auto;
+  padding: 0 2px;
+  width: 100%;
+  flex: 0 0 auto;
+  /* No longer over live imagery, so the per-glyph shadow that
+     kept the HUD legible against a scene is just noise here. */
+  text-shadow: none;
+}
+/* Below the gate the row has the whole width of the screen and no
+   picture to protect, so it wraps into as many lines as it needs
+   instead of stacking into a narrow column the way it had to when
+   it lived inside a tall gate. */
+.screen--camera .hud__row--bottom {
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 10px 12px;
+}
+
 .hud__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .hud__row--bottom { align-items: flex-end; }
 .hud__group { display: flex; align-items: center; gap: 9px; }
@@ -469,10 +563,12 @@ body {
    RAILS + CONTROLS
    Each control is its own floating glass pebble.
 
-   The rails sit on the letterbox bars, so which axis they run
-   along follows the gate: a wide gate pillarboxes and gets
-   vertical rails at the sides; a tall gate letterboxes and gets
-   horizontal rails top and bottom.
+   The rails sit on whatever the gate does not fill, so which axis
+   they run along follows how the phone is held (data-gate), not
+   the picture's own shape: held sideways the gate pillarboxes and
+   the rails run vertically at the sides; held upright — which is
+   how this app is shot — it letterboxes and they run horizontally
+   top and bottom.
    ============================================================ */
 .rail {
   position: absolute;
@@ -539,6 +635,32 @@ body {
 }
 #btn-torch.is-unavailable { opacity: 0.4; }
 #btn-torch.is-unavailable .icon-btn__slash { opacity: 1; }
+
+/* The 16:9 guide toggle. Lit when the guide is on, the same way
+   the AE/AWB locks read — it is a mode, not an action. */
+#btn-guide[aria-pressed="true"] {
+  color: var(--accent);
+  box-shadow: var(--rim), 0 6px 18px rgba(0, 0, 0, 0.55), 0 0 22px var(--glow);
+}
+#btn-guide[aria-pressed="true"] .icon-btn__dash { stroke-dasharray: none; }
+.icon-btn__dash { stroke-dasharray: 2.6 2.6; opacity: 0.9; }
+
+/* The ratio itself, captioned under the button rather than crammed
+   inside it: absolutely positioned so it never changes the size of
+   the pebble or the spacing of the rail it sits in. */
+.icon-btn__caption {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: var(--mono);
+  font-size: 8px;
+  letter-spacing: 0.14em;
+  color: var(--ink-faint);
+  pointer-events: none;
+  transition: color 180ms var(--ease);
+}
+#btn-guide[aria-pressed="true"] .icon-btn__caption { color: var(--accent); }
 
 .icon-btn__badge {
   position: absolute;
@@ -1038,9 +1160,13 @@ body {
 }
 
 /* ============================================================
-   TALL GATE (FORMAT.ASPECT < 1)
-   Rails become a top and a bottom bar, which is also where a
-   phone camera's controls belong when it is held upright.
+   HELD UPRIGHT  (data-gate = SHOOT_ORIENTATION = "portrait")
+   ------------------------------------------------------------
+   data-gate says how the phone is held, not what shape the
+   picture is — since the wide 1.43:1 band is cropped out of an
+   upright frame, the leftover screen is above and below it, so
+   that is where the rails go. Which is also where a phone
+   camera's controls belong when it is held this way.
    ============================================================ */
 .app[data-gate="portrait"] {
   /* Tall enough for the 64px shutter plus breathing room. */
@@ -1063,17 +1189,17 @@ body {
 .app[data-gate="portrait"] .rail--left  { top: 0;    padding-top: var(--safe-t); }
 .app[data-gate="portrait"] .rail--right { bottom: 0; padding-bottom: var(--safe-b); }
 
-/* A tall gate is narrow, so the bottom HUD row stacks instead of
-   trying to fit the chips, zoom and the histogram side by side. */
-.app[data-gate="portrait"] .hud__row--bottom {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
+/* Playback still overlays its HUD on the picture — there is no
+   spare screen there, the developed take fills the frame — so the
+   narrow-gate stacking stays for that one. */
+.app[data-gate="portrait"] .hud--playback .hud__row--top {
+  flex-wrap: wrap;
+  gap: 4px 10px;
 }
-.app[data-gate="portrait"] .histogram { order: -2; align-self: flex-end; }
-.app[data-gate="portrait"] .zoom { order: -1; align-self: center; }
-.app[data-gate="portrait"] .hud__row--top { flex-wrap: wrap; gap: 4px 10px; }
-.app[data-gate="portrait"] .hud__tag { font-size: 9px; letter-spacing: 0.14em; }
+.app[data-gate="portrait"] .hud--playback .hud__tag {
+  font-size: 9px;
+  letter-spacing: 0.14em;
+}
 
 /* ============================================================
    PORTRAIT / SMALL-SCREEN ADJUSTMENTS

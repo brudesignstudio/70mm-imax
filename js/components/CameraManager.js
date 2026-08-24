@@ -78,24 +78,25 @@ export class CameraManager {
     // constraint set is the most common cause of OverconstrainedError
     // on mid-range Android hardware.
     //
-    // width/height ideal match FORMAT.MAX_LONG_EDGE, not the sensor's
-    // maximum: FilmRenderer crops and downsamples every frame to that
-    // long edge (~1920) regardless of what comes in, so negotiating a
-    // bigger sensor read-out (this used to ask for 3840×2160) buys the
-    // export nothing. It only costs real time three ways — more
-    // pixels for the live <video> element to decode and paint every
-    // frame while framing, more pixels the raw encoder has to push in
-    // real time while shooting, and more texture-upload bandwidth per
-    // frame when FilmRenderer replays the raw take during developing
-    // — which is most of what "laggy" actually was.
+    // width/height come from FORMAT.CAPTURE and are written the way
+    // an upright phone reports its track — taller than it is wide.
+    // That is not cosmetic. The gate is a wide band cropped out of
+    // an upright frame, so the finished film's width *is* the track's
+    // short axis: ask for 1920 × 1080 here and the export can never
+    // be more than 1080 across no matter what MAX_LONG_EDGE says.
+    // 1440 × 1920 buys back that axis, and tends to open the sensor's
+    // full width rather than a 16:9 slice of it, which is the same
+    // axis again. It is still only 2.8MP — a third more than the
+    // 1080p this used to ask for, nowhere near the 3840 × 2160 it
+    // asked for before that, which was pure waste.
     //
     // frameRate is capped hard at FORMAT.FPS (not just `ideal`): every
     // frame above that is one more frame the develop pass has to
     // grade later for no benefit, since IMAX itself runs at 24fps.
     const video = {
       facingMode: { ideal: 'environment' },
-      width:  { ideal: FORMAT.MAX_LONG_EDGE },
-      height: { ideal: Math.round(FORMAT.MAX_LONG_EDGE * 9 / 16) },
+      width:  { ideal: FORMAT.CAPTURE.WIDTH },
+      height: { ideal: FORMAT.CAPTURE.HEIGHT },
       frameRate: { ideal: FORMAT.FPS, max: FORMAT.FPS },
       // Kill the UA's own beautification/stabilisation where offered;
       // we are doing our own grade and want the flattest source.

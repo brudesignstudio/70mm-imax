@@ -1,7 +1,7 @@
 {
   "name": "70MM — Large Format Camera",
   "short_name": "70MM",
-  "description": "Shoot on a digital emulation of 70mm large-format negative. 1:1.43, three minutes to a magazine.",
+  "description": "Shoot on a digital emulation of 70mm large-format negative. 1.43:1, three minutes to a magazine.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "fullscreen",

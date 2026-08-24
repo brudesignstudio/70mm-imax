@@ -338,3 +338,29 @@ void main() {
 
   gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }`;
+
+/* ===============================================================
+   FILM STRIP — the sprocket bars
+
+   The border artwork, blitted into a viewport. It used to be
+   drawn onto a separate 2D canvas that the graded frame was then
+   copied into, which cost a whole extra full-frame canvas-to-canvas
+   copy every frame of every develop pass — on some mobile drivers a
+   readback, in the middle of a frame budget that has to fit a
+   decode, a grade and an encode. Doing it here means the graded
+   frame is never copied anywhere: the picture is composited into
+   the middle of this canvas and the bars are drawn around it, and
+   what MediaRecorder captures is that one canvas.
+
+   uRegion.xy scales and uRegion.zw offsets into the artwork, which
+   is how one texture and one draw serves both bars — top and bottom
+   are just two sub-rects of the same image.
+   =============================================================== */
+export const FRAG_STRIP = `
+precision mediump float;
+varying vec2 vUV;
+uniform sampler2D uSrc;
+uniform vec4 uRegion;
+void main() {
+  gl_FragColor = vec4(texture2D(uSrc, vUV * uRegion.xy + uRegion.zw).rgb, 1.0);
+}`;
