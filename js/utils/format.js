@@ -34,11 +34,11 @@ export function slate(ts) {
   return `${p(d.getDate())} ${months[d.getMonth()]} ${String(d.getFullYear()).slice(2)} · ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** Filename for downloads: 70MM_20260803_2041.mp4 */
+/** Filename for downloads: 70mm_20260803_2041.mp4 */
 export function takeFilename(ts, ext) {
   const d = new Date(ts);
   const p = (n) => String(n).padStart(2, '0');
-  return `70MM_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
+  return `70mm_${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}.${ext}`;
 }
 
 /** Map a MIME type to a file extension. */

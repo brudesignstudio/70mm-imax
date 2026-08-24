@@ -1,4 +1,4 @@
-# 70MM — Large Format Camera
+# 70 mm — Large Format Camera
 
 A mobile-first PWA that shoots on a digital emulation of 70mm large-format
 negative. Wide 1.43:1 gate shot with the phone held upright, three minutes

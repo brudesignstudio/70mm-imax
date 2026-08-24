@@ -71,7 +71,7 @@ export class Playback {
     this.video.load();
 
     const dims = take.width ? `${take.width}×${take.height}` : FORMAT.LABEL;
-    this.metaEl.textContent = `${dims} · 70MM`;
+    this.metaEl.textContent = `${dims} · 70 mm`;
     this.timeEl.textContent = clock(0);
     this.scrub.style.width = '0%';
     this.app.setAttribute('data-playing', 'false');

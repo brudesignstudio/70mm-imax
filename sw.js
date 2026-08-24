@@ -2,14 +2,14 @@
  * sw.js — service worker
  * ---------------------------------------------------------------
  * The app shell is tiny and entirely static, so it is precached on
- * install and served cache-first. Once installed, 70MM runs with
+ * install and served cache-first. Once installed, 70 mm runs with
  * no network at all — which is the point: you shoot where you are,
  * not where the signal is.
  *
  * Recorded takes never touch the cache; they live in IndexedDB.
  */
 
-const VERSION = 'v8';
+const VERSION = 'v9';
 const CACHE = `imax70-${VERSION}`;
 
 const SHELL = [

@@ -62,8 +62,8 @@ class App {
     // upright phone, that is above and below.
     this.app.setAttribute('data-gate', SHOOT_ORIENTATION);
     $('.rotate__text').textContent = ROTATE_PROMPT;
-    $('#tag-format').textContent = `${FORMAT.LABEL} · 70MM`;
-    $('#pb-meta').textContent = `${FORMAT.LABEL} · 70MM`;
+    $('#tag-format').textContent = `${FORMAT.LABEL} · 70 mm`;
+    $('#pb-meta').textContent = `${FORMAT.LABEL} · 70 mm`;
 
     // The 16:9 guide sits where the fullscreen button used to.
     // Fullscreen was never much of a control — it does nothing at
@@ -787,7 +787,7 @@ window.addEventListener('DOMContentLoaded', () => {
     window.app = new App();
   } catch (err) {
     const note = document.getElementById('intro-note');
-    if (note) note.textContent = err.message || 'This browser cannot run 70MM.';
+    if (note) note.textContent = err.message || 'This browser cannot run 70 mm.';
   }
 });
 
@@ -796,5 +796,24 @@ window.addEventListener('DOMContentLoaded', () => {
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('sw.js').catch(() => { /* offline is optional */ });
+  });
+
+  // A new worker activating mid-session (see sw.js's skipWaiting +
+  // clients.claim) otherwise leaves this tab quietly running the old
+  // cached JS and images until the operator manually reloads — which
+  // is exactly what made icon and film-strip fixes invisible without
+  // a full reinstall. Reload once the new worker takes over, but
+  // never mid-take: a recording or a develop pass in flight would be
+  // destroyed by it, so an update landing then just waits its turn.
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (reloaded) return;
+    const trySafeReload = () => {
+      const busy = window.app?.recorder?.isRecording || window.app?.screen === 'processing';
+      if (busy) { setTimeout(trySafeReload, 2000); return; }
+      reloaded = true;
+      location.reload();
+    };
+    trySafeReload();
   });
 }
