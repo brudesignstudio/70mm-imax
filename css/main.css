@@ -591,21 +591,35 @@ body {
 
 /* ============================================================
    CAPTURE COLUMN — zoom / shutter / bottom row, one axis
+   ---------------------------------------------------------------
+   Spacing is deliberately uneven, not a uniform gap: zoom sits
+   close under the EV/histogram row above it, the shutter gets real
+   breathing room on both sides of it, and gallery/guide sit out
+   near the rail's own edges rather than huddled against the mode
+   toggle. Each of those is a different distance, so each is its
+   own margin rather than one flex `gap` trying to be all of them.
    ============================================================ */
 .capture {
   --zoom-step: 42px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  /* Stretched to the rail's full width (not shrink-wrapped to its
+     content) so .capture__row's 1fr tracks below have real room to
+     push gallery/guide out toward the rail edges, rather than the
+     row itself only ever being as wide as the mode toggle needs. */
+  flex: 1 1 auto;
 }
+.capture .zoom { margin-bottom: 6px; }
+.capture .shutter { margin: 14px 0 22px; }
 
 /* Gallery — mode — guide, on one line.
    1fr auto 1fr keeps the mode toggle centred under the shutter no
    matter that the two flanking buttons are different sizes; a flex
    row would let the wider one push it off centre. The flanking
-   cells are centred within their own track so both buttons sit a
-   consistent distance out rather than hugging the screen edges. */
+   cells are centred within their own track, and now that .capture
+   is full-width, those tracks actually span from the mode toggle
+   out to the rail's edge — which is the point. */
 .capture__row {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
@@ -1344,13 +1358,15 @@ body {
    real height — and the gate has to give that height back, or the
    picture would sit under the controls. --rail-capture is the one
    number both read, so they can never disagree. */
-.app[data-gate="portrait"] .screen--camera { --rail-capture: clamp(164px, 25vh, 212px); }
+.app[data-gate="portrait"] .screen--camera { --rail-capture: clamp(215px, 34vh, 280px); }
 .app[data-gate="portrait"] .screen--camera .rail--right {
   height: var(--rail-capture);
-  align-items: center;
-  /* The guide button's caption hangs below its pebble, and that
-     pebble now sits on the bottom row — so the rail keeps a little
-     clearance under it or the caption would run off the screen. */
+  /* Pinned to the top of the band, not centred in it: zoom sits
+     close under the EV/histogram row this way, and the slack that
+     centring would have split above and below instead collects
+     below the bottom row, which is exactly where the shutter and
+     the guide caption both want the extra room. */
+  align-items: flex-start;
   padding-bottom: calc(var(--safe-b) + 12px);
 }
 .app[data-gate="portrait"] .screen--camera .stage {
