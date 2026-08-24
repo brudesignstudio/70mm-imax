@@ -125,6 +125,39 @@ export const GUIDE = {
   /** The reference format the guide marks out. */
   ASPECT: 16 / 9,
   LABEL: '16:9',
+  /** The framing button's own caption — spelled out, since "16:9"
+   *  alone reads as a spec number rather than a control. */
+  BUTTON_LABEL: '16:9 Guide',
+};
+
+/* ===============================================================
+   STILLS
+   ---------------------------------------------------------------
+   A photo is one frame through the same bench a take goes through:
+   same gate, same grade, same border art. What it does *not* share
+   is anything to do with motion — no encoder, no shutter blend
+   (there is no previous frame to integrate against), no steadicam
+   (there is no path to smooth). So a still needs none of RECORDING
+   and all of FORMAT / LOOK / EXPORT_FRAME.
+
+   JPEG at 0.94 rather than PNG: the grade lays real grain over the
+   whole frame, and grain is exactly the high-frequency detail PNG
+   cannot compress — a lossless still off this bench runs 20MB and
+   change, for no visible gain over a high-quality JPEG.
+   =============================================================== */
+export const PHOTO = {
+  MIME: 'image/jpeg',
+  QUALITY: 0.94,
+
+  /**
+   * Grain, gate weave and breathing are all functions of time, so
+   * a still rendered at a fixed clock would come out of the lab
+   * identical every time — same grain, same registration. Each
+   * exposure is instead given a random point on that clock, within
+   * this many seconds, so two frames of the same scene differ the
+   * way two frames of real stock would.
+   */
+  PHASE_SPREAD_S: 600,
 };
 
 /* ===============================================================
@@ -533,8 +566,13 @@ export const PREFS = {
   haptics: true,
   /** Steadicam on by default — see STEADY. */
   steady: true,
-  /** The 16:9 framing guide — see GUIDE. Off by default: it is an
-   *  aid for a shot you already know will be re-cropped, not
-   *  furniture the viewfinder should always carry. */
-  guide: false,
+  /** The 16:9 framing guide — see GUIDE. On by default, since a
+   *  1.43 gate is taller than every screen the finished film is
+   *  likely to be shown on — the operator can switch it off once
+   *  they know they don't need the reminder. */
+  guide: true,
+  /** Which capture mode the shutter is in: 'video' | 'photo'.
+   *  Remembered between sessions so the app opens in whichever one
+   *  the operator actually uses. */
+  mode: 'video',
 };

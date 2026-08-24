@@ -25,7 +25,8 @@
  * exists either way; this is what it is actually doing now.
  */
 
-import { FORMAT, RECORDING, EXPORT_FRAME } from '../config.js';
+import { FORMAT, RECORDING } from '../config.js';
+import { loadFilmStripImage } from '../utils/filmstrip.js';
 import { FilmRenderer } from './FilmRenderer.js';
 import { Recorder } from './Recorder.js';
 
@@ -33,22 +34,18 @@ import { Recorder } from './Recorder.js';
 const PROGRESS_INTERVAL_MS = 250;
 
 /**
- * The film-strip border art is static and shared by every take, so
- * it is loaded once and cached rather than re-fetched per Developer
- * instance.
+ * How much longer the raw take is allowed to run past the *live*
+ * Recorder's measured duration before developing gives up on it.
+ * Hitting stop does not end the encoder instantly — there is a real
+ * flush latency between the tap and MediaRecorder actually finishing
+ * its last frame — so the raw file routinely runs a little past what
+ * the live timer measured. Cutting developing off exactly at that
+ * mark clipped that tail on every take, in picture and sound both.
+ * 'ended' (below) is what actually decides when a normal take is
+ * done; this is only the backstop for a raw file whose own duration
+ * signal is broken and never fires it.
  */
-let _filmStripImagePromise = null;
-function loadFilmStripImage() {
-  if (!_filmStripImagePromise) {
-    _filmStripImagePromise = new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = () => reject(new Error('The film-strip artwork failed to load.'));
-      img.src = EXPORT_FRAME.image;
-    });
-  }
-  return _filmStripImagePromise;
-}
+const TAIL_GRACE_MS = 1500;
 
 export class Developer {
   /**
@@ -348,13 +345,14 @@ export class Developer {
       this.onProgress?.(Math.min(1, mediaMs / this._durationMs));
     }
 
-    // The authoritative stop signal is the duration the *live*
-    // Recorder measured with its own high-resolution timer when the
-    // take was shot — not this offscreen video's self-reported
-    // duration or its 'ended' event, either of which can be wrong
-    // for a source with imperfect container metadata. 'ended' and
-    // the maxMs timer in _run() remain as backups.
-    if (mediaMs >= this._durationMs) this._finish();
+    // 'ended' (see _run()) is what normally ends a take, once
+    // playback actually reaches the raw file's real last frame. This
+    // is only the backstop, padded by TAIL_GRACE_MS rather than
+    // matched exactly to the live timer — see its comment above —
+    // so it stands in only for a raw file whose duration signal is
+    // genuinely broken, not for the ordinary bit of encoder flush
+    // latency every take has past the moment stop was tapped.
+    if (mediaMs >= this._durationMs + TAIL_GRACE_MS) this._finish();
   }
 
   _finish() {

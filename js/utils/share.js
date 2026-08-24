@@ -9,7 +9,8 @@
  *
  * Rules that actually matter in practice:
  *   • iOS will only offer "Save Video" for an MP4/MOV. A WebM is
- *     shown as a generic file and can only go to Files.
+ *     shown as a generic file and can only go to Files. A JPEG
+ *     still gets "Save Image" on the same sheet, no special casing.
  *   • share() must be called from within a user gesture; awaiting
  *     anything slow before it (an IndexedDB read, a fetch) breaks
  *     the gesture on Safari. Callers therefore pass a Blob they
@@ -20,8 +21,8 @@
 
 import { extFor, takeFilename } from './format.js';
 
-/** Can this browser hand a video file to the OS share sheet? */
-export function canShareVideo(blob) {
+/** Can this browser hand a file to the OS share sheet? */
+export function canShareFile(blob) {
   if (!navigator.canShare || !navigator.share) return false;
   try {
     const file = new File([blob], 'probe.' + extFor(blob.type), { type: blob.type });
@@ -30,15 +31,16 @@ export function canShareVideo(blob) {
 }
 
 /**
- * Save a take. Returns { method, ok } where method is
- * 'share' (system sheet → Photos/Files) or 'download'.
- * Must be called synchronously from a user gesture.
+ * Save a take — a video or a still, the routing is identical.
+ * Returns { method, ok } where method is 'share' (system sheet →
+ * Photos/Files) or 'download'. Must be called synchronously from a
+ * user gesture.
  */
-export async function saveVideo(blob, ts = Date.now()) {
+export async function saveMedia(blob, ts = Date.now()) {
   const ext = extFor(blob.type);
   const name = takeFilename(ts, ext);
 
-  if (canShareVideo(blob)) {
+  if (canShareFile(blob)) {
     const file = new File([blob], name, { type: blob.type });
     try {
       await navigator.share({ files: [file], title: name });

@@ -25,6 +25,7 @@ import { CameraManager } from './components/CameraManager.js';
 import { coverCrop } from './components/FilmRenderer.js';
 import { Recorder } from './components/Recorder.js';
 import { Developer } from './components/Developer.js';
+import { Photographer } from './components/Photographer.js';
 import { OrientationGuard } from './components/OrientationGuard.js';
 import { Histogram } from './components/Histogram.js';
 import { Playback } from './components/Playback.js';
@@ -45,6 +46,10 @@ class App {
     this.zoomLevel = ZOOM.default;
     this._digitalZoomFactor = 1;   // baked into the develop pass; see setZoomLevel
     this.developer = null;         // the in-flight Developer, if any
+    this.photographer = null;      // the stills bench, built on first use
+    this.mode = null;              // set by setMode() below; null so the
+                                   // first call is never a no-op
+    this._exposing = false;        // guards the shutter during a still
 
     this.settings = new Settings({
       onLookChange: () => {},   // the grade only applies at develop time now
@@ -70,8 +75,9 @@ class App {
     // all on iOS Safari, which implements no Fullscreen API for
     // arbitrary elements, and the shutter already asks for it
     // silently on every take (see toggleRecord).
-    $('#guide-label').textContent = GUIDE.LABEL;
+    $('#guide-label').textContent = GUIDE.BUTTON_LABEL;
     this.setGuide(this.settings.prefs.guide === true);
+    this.setMode(this.settings.prefs.mode === 'photo' ? 'photo' : 'video');
 
     this.gateFit = new GateFit().attachAll();
     this.orientation = new OrientationGuard((o) => this.onOrientation(o), SHOOT_ORIENTATION);
@@ -145,7 +151,11 @@ class App {
      ============================================================= */
   bind() {
     on($('#btn-begin'), 'click', () => this.begin());
-    on($('#btn-record'), 'click', () => this.toggleRecord());
+    on($('#btn-record'), 'click', () => this.trip());
+
+    for (const btn of $$('#mode-toggle button')) {
+      on(btn, 'click', () => this.setMode(btn.dataset.mode));
+    }
     on($('#btn-settings'), 'click', () => { this.settings.open(); this.updateReadout(); });
     on($('#btn-guide'), 'click', () => {
       this.setGuide(!this._guideOn);
@@ -289,6 +299,7 @@ class App {
     setHapticsEnabled(prefs.haptics);
     this.histogram?.setEnabled(prefs.histogram);
     this.setGuide(prefs.guide === true);
+    this.setMode(prefs.mode === 'photo' ? 'photo' : 'video');
   }
 
   /**
@@ -374,14 +385,124 @@ class App {
 
   updateShutterState() {
     const btn = $('#btn-record');
+    const photo = this.mode === 'photo';
+    // A still needs the gate and a live track, but no encoder —
+    // MediaRecorder support is a video-only requirement, so a
+    // browser that cannot record can still shoot photos.
     const ready = !!this.orientation?.isReady &&
                   !!this.camera?.videoTrack &&
-                  !!this.recorder?.supported;
+                  (photo ? !this._exposing : !!this.recorder?.supported);
     btn.disabled = !ready;
     btn.setAttribute('aria-label',
-      this.recorder?.isRecording ? 'Stop recording'
+      photo ? (ready ? 'Take photo' : 'Hold the phone upright to shoot')
+      : this.recorder?.isRecording ? 'Stop recording'
       : ready ? 'Start recording'
       : 'Hold the phone upright to record');
+  }
+
+  /* =============================================================
+     CAPTURE MODE
+     ---------------------------------------------------------------
+     Photo and video are the same instrument: same gate, same
+     grade, same border art, same shutter button. The mode only
+     decides what that button does with the frames coming off the
+     sensor — keep one and hand it back, or run a reel.
+     ============================================================= */
+  setMode(mode) {
+    const want = mode === 'photo' ? 'photo' : 'video';
+    if (want === this.mode) return;
+    // Switching mid-take would leave a recording with no way to
+    // stop it, so the reel is closed out first.
+    if (this.recorder?.isRecording) this.recorder.stop('user');
+
+    const settling = this.mode === null;   // the first call, from the constructor
+    this.mode = want;
+    this.app.setAttribute('data-mode', want);
+    for (const btn of $$('#mode-toggle button')) {
+      btn.setAttribute('aria-pressed', btn.dataset.mode === want ? 'true' : 'false');
+    }
+    if (this.settings.prefs.mode !== want) {
+      this.settings.prefs.mode = want;
+      this.settings._savePrefs();
+    }
+    if (!settling) haptic('tick');
+    this.updateShutterState();
+  }
+
+  /** The shutter. What it trips depends on the mode. */
+  trip() {
+    if (this.mode === 'photo') return this.takePhoto();
+    return this.toggleRecord();
+  }
+
+  /* =============================================================
+     STILLS
+     ============================================================= */
+  async takePhoto() {
+    if (this._exposing) return;
+    if (!this.orientation.isReady) {
+      toast(ROTATE_PROMPT);
+      return;
+    }
+
+    this._exposing = true;
+    this.updateShutterState();
+    haptic('start');
+
+    try {
+      // Built on first use and kept afterwards — see Photographer.
+      this.photographer ??= new Photographer({
+        look: this.settings.look,
+        quality: this.settings.prefs.quality,
+        digitalZoom: this._digitalZoomFactor,
+      });
+      // Settings and zoom can both have moved since the last frame.
+      this.photographer.setLook(this.settings.look);
+      this.photographer.setQuality(this.settings.prefs.quality);
+      this.photographer.setDigitalZoom(this._digitalZoomFactor);
+
+      const shot = await this.photographer.capture(this.source);
+      this.flashFrame();
+
+      const thumb = await captureThumbnail(this.photographer.canvas);
+      const take = {
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        ts: Date.now(),
+        kind: 'photo',
+        blob: shot.blob,
+        mimeType: shot.mimeType,
+        durationMs: 0,
+        width: shot.width,
+        height: shot.height,
+        thumb,
+      };
+
+      // Same rule as a take: a full quota costs the archive, never
+      // the frame the operator just shot.
+      try {
+        await putTake(take);
+        await this.gallery.refresh();
+      } catch {
+        toast('Could not archive this frame, but you can still save it.');
+      }
+
+      this.openTake(take);
+    } catch (err) {
+      haptic('error');
+      toast(err.message || 'That frame could not be exposed.');
+    } finally {
+      this._exposing = false;
+      this.updateShutterState();
+    }
+  }
+
+  /** The white blink that says a frame was taken. */
+  flashFrame() {
+    const flash = $('#photo-flash');
+    if (!flash) return;
+    flash.classList.remove('is-firing');
+    void flash.offsetWidth;      // restart the animation
+    flash.classList.add('is-firing');
   }
 
   /* =============================================================
@@ -510,6 +631,7 @@ class App {
     const take = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       ts: Date.now(),
+      kind: 'video',
       blob: result.blob,
       mimeType: result.mimeType,
       durationMs: result.durationMs,

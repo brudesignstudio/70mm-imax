@@ -13,7 +13,7 @@ import { FORMAT } from '../config.js';
 import { $, on, toast } from '../utils/dom.js';
 import { clock } from '../utils/format.js';
 import { haptic } from '../utils/haptics.js';
-import { saveVideo } from '../utils/share.js';
+import { saveMedia } from '../utils/share.js';
 
 export class Playback {
   /** @param {object} handlers { onDelete, onExit, onSaved } */
@@ -21,6 +21,7 @@ export class Playback {
     this.handlers = handlers;
 
     this.video = $('#player');
+    this.photo = $('#player-photo');
     this.timeEl = $('#pb-time');
     this.metaEl = $('#pb-meta');
     this.scrub = $('#scrub-fill');
@@ -60,15 +61,31 @@ export class Playback {
     );
   }
 
+  /** True when the take under review is a still, not a reel. */
+  get isPhoto() { return this.take?.kind === 'photo'; }
+
   /**
-   * @param {object} take { blob, mimeType, durationMs, ts, width, height }
+   * @param {object} take { blob, mimeType, durationMs, ts, width, height, kind }
    */
   load(take) {
     this.unload();
     this.take = take;
     this.objectURL = URL.createObjectURL(take.blob);
-    this.video.src = this.objectURL;
-    this.video.load();
+
+    // data-take drives which transport furniture the playback screen
+    // shows at all — a still has no clock, scrub or play button to
+    // offer. See main.css.
+    const photo = take.kind === 'photo';
+    this.app.setAttribute('data-take', photo ? 'photo' : 'video');
+    this.video.hidden = photo;
+    this.photo.hidden = !photo;
+
+    if (photo) {
+      this.photo.src = this.objectURL;
+    } else {
+      this.video.src = this.objectURL;
+      this.video.load();
+    }
 
     const dims = take.width ? `${take.width}×${take.height}` : FORMAT.LABEL;
     this.metaEl.textContent = `${dims} · 70 mm`;
@@ -81,6 +98,7 @@ export class Playback {
     try { this.video.pause(); } catch { /* ignore */ }
     this.video.removeAttribute('src');
     try { this.video.load(); } catch { /* ignore */ }
+    this.photo.removeAttribute('src');
     if (this.objectURL) {
       URL.revokeObjectURL(this.objectURL);
       this.objectURL = null;
@@ -92,15 +110,23 @@ export class Playback {
      TRANSPORT
      ============================================================= */
   async play() {
+    if (this.isPhoto) return;
     try { await this.video.play(); }
     catch { toast('Tap the frame to play.'); }
   }
 
-  pause() { this.video.pause(); }
+  pause() {
+    if (this.isPhoto) return;
+    this.video.pause();
+  }
 
-  toggle() { this.video.paused ? this.play() : this.pause(); }
+  toggle() {
+    if (this.isPhoto) return;
+    this.video.paused ? this.play() : this.pause();
+  }
 
   restart() {
+    if (this.isPhoto) return;
     this.video.currentTime = 0;
     this.play();
     haptic('tick');
@@ -125,7 +151,7 @@ export class Playback {
   async _save() {
     if (!this.take) return;
     haptic('tick');
-    const res = await saveVideo(this.take.blob, this.take.ts);
+    const res = await saveMedia(this.take.blob, this.take.ts);
     if (res.cancelled) return;
     toast('Shared');
     this.handlers.onSaved?.(this.take, res);

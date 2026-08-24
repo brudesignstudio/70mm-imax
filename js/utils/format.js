@@ -46,6 +46,8 @@ export function extFor(mime = '') {
   if (mime.includes('mp4')) return 'mp4';
   if (mime.includes('webm')) return 'webm';
   if (mime.includes('quicktime')) return 'mov';
+  if (mime.includes('jpeg') || mime.includes('jpg')) return 'jpg';
+  if (mime.includes('png')) return 'png';
   return 'bin';
 }
 

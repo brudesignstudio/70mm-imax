@@ -105,6 +105,9 @@
 
         <!-- Reel progress: a thin line that fills across 3 minutes -->
         <div class="reel" aria-hidden="true"><i id="reel-fill"></i></div>
+
+        <!-- Shutter flash, photo mode only -->
+        <div class="frame__flash" id="photo-flash" aria-hidden="true"></div>
       </div>
 
       <div class="hud hud--below">
@@ -144,6 +147,12 @@
       <button class="icon-btn icon-btn--sm" id="btn-settings" type="button" aria-label="Settings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M4.5 4.5l1.7 1.7M17.8 17.8l1.7 1.7M2.8 12h2.4M18.8 12h2.4M4.5 19.5l1.7-1.7M17.8 6.2l1.7-1.7"/></svg>
       </button>
+      <!-- Capture mode. Photo runs the same gate, grade and border
+           as a take — one frame instead of a reel. -->
+      <div class="mode" id="mode-toggle" role="group" aria-label="Capture mode">
+        <button type="button" data-mode="photo" aria-pressed="false">PHOTO</button>
+        <button type="button" data-mode="video" aria-pressed="true">VIDEO</button>
+      </div>
       <button class="shutter" id="btn-record" type="button" aria-label="Start recording" disabled>
         <span class="shutter__inner" id="shutter-inner"></span>
         <svg class="shutter__ring" viewBox="0 0 100 100" aria-hidden="true">
@@ -156,7 +165,7 @@
           <rect x="2.5" y="4" width="19" height="16" rx="1.6"/>
           <path class="icon-btn__dash" d="M2.5 8.5h19M2.5 15.5h19"/>
         </svg>
-        <span class="icon-btn__caption" id="guide-label">16:9</span>
+        <span class="icon-btn__caption" id="guide-label">16:9 Guide</span>
       </button>
     </div>
 
@@ -199,6 +208,10 @@
              its own pixels, so there is no decorative .gate overlay
              here — the picture is the framing furniture now. -->
         <video id="player" class="frame__video" playsinline webkit-playsinline></video>
+        <!-- A still is reviewed in the same frame, on its own
+             element: a <video> cannot show a JPEG, and swapping the
+             element's type at runtime is worse than having both. -->
+        <img id="player-photo" class="frame__video" alt="Captured still" hidden />
         <div class="hud hud--playback">
           <div class="hud__row hud__row--top">
             <span class="hud__timer" id="pb-time">00:00</span>

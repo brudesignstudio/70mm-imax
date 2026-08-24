@@ -560,6 +560,81 @@ body {
 .app[data-recording="true"] .zoom { opacity: 0.4; pointer-events: none; }
 
 /* ============================================================
+   CAPTURE MODE — photo / video
+   Same segmented-pebble language as .zoom; it is the same kind of
+   control, and the two sit on opposite rails doing the same job.
+   ============================================================ */
+.mode {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid var(--line);
+  box-shadow: var(--rim), 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.mode button {
+  min-width: 46px;
+  height: 24px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  color: var(--ink-dim);
+  transition: color 180ms var(--ease), background 180ms var(--ease);
+}
+.mode button[aria-pressed="true"] {
+  color: #02141d;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--glow);
+}
+/* Mid-take the mode is not a live choice: stopping is. */
+.app[data-recording="true"] .mode { opacity: 0.4; pointer-events: none; }
+
+/* Photo mode has no reel to run down and no clock to show, so the
+   video-only furniture stands down rather than sitting there at
+   00:00 pretending. */
+.app[data-mode="photo"] #rec-dot,
+.app[data-mode="photo"] #timer,
+.app[data-mode="photo"] .hud__sep,
+.app[data-mode="photo"] #remaining,
+.app[data-mode="photo"] .reel,
+.app[data-mode="photo"] .shutter__ring { display: none; }
+
+/* The shutter reads as a stills release in photo mode: a ring
+   around the disc rather than a disc that morphs into a stop
+   square. */
+.app[data-mode="photo"] .shutter { box-shadow: var(--rim), var(--cast), inset 0 0 0 2px rgba(255, 255, 255, 0.5); }
+.app[data-mode="photo"] .shutter__inner { width: 48px; height: 48px; }
+
+/* One frame's worth of white, on the frame itself, when a still is
+   taken — the oldest feedback in photography and still the clearest. */
+.frame__flash {
+  position: absolute;
+  inset: 0;
+  background: #fff;
+  opacity: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+.frame__flash.is-firing { animation: photo-flash 320ms var(--ease); }
+@keyframes photo-flash {
+  0%   { opacity: 0.85; }
+  100% { opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .frame__flash.is-firing { animation-duration: 1ms; }
+}
+
+/* A still has no transport: no clock, no scrub, no play button. */
+.app[data-take="photo"] #pb-time,
+.app[data-take="photo"] .scrub,
+.app[data-take="photo"] #btn-playpause,
+.app[data-take="photo"] #btn-restart { display: none; }
+
+/* ============================================================
    RAILS + CONTROLS
    Each control is its own floating glass pebble.
 
@@ -653,6 +728,7 @@ body {
   top: calc(100% + 3px);
   left: 50%;
   transform: translateX(-50%);
+  white-space: nowrap;
   font-family: var(--mono);
   font-size: 8px;
   letter-spacing: 0.14em;

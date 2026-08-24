@@ -12,7 +12,7 @@
 import { $, el, on, toast } from '../utils/dom.js';
 import { clockPrecise, bytes, slate } from '../utils/format.js';
 import { listTakes, deleteTake } from '../utils/storage.js';
-import { saveVideo } from '../utils/share.js';
+import { saveMedia } from '../utils/share.js';
 import { haptic } from '../utils/haptics.js';
 
 const ICON = {
@@ -57,9 +57,11 @@ export class Gallery {
     const thumbURL = take.thumb ? URL.createObjectURL(take.thumb) : null;
     if (thumbURL) this._urls.push(thumbURL);
 
+    const photo = take.kind === 'photo';
+
     const img = el('img', {
       class: 'take__thumb',
-      alt: `Take from ${slate(take.ts)}`,
+      alt: `${photo ? 'Photo' : 'Take'} from ${slate(take.ts)}`,
       loading: 'lazy',
       src: thumbURL || '',
     });
@@ -69,19 +71,19 @@ export class Gallery {
       el('div', { class: 'take__actions' },
         el('button', {
           type: 'button',
-          'aria-label': 'Save take',
+          'aria-label': photo ? 'Save photo' : 'Save take',
           html: ICON.save,
           onClick: async (e) => {
             e.stopPropagation();
             haptic('tick');
-            const res = await saveVideo(take.blob, take.ts);
+            const res = await saveMedia(take.blob, take.ts);
             if (res.cancelled) return;
             toast('Shared');
           },
         }),
         el('button', {
           type: 'button',
-          'aria-label': 'Delete take',
+          'aria-label': photo ? 'Delete photo' : 'Delete take',
           html: ICON.trash,
           onClick: async (e) => {
             e.stopPropagation();
@@ -94,7 +96,11 @@ export class Gallery {
       ),
       el('div', { class: 'take__meta' },
         el('span', { text: slate(take.ts) }),
-        el('span', { text: `${clockPrecise(take.durationMs)} · ${bytes(take.blob?.size)}` }),
+        // A still has no running time; it says so instead of
+        // reading "0:00.0", which looks like a take that failed.
+        el('span', {
+          text: `${photo ? 'STILL' : clockPrecise(take.durationMs)} · ${bytes(take.blob?.size)}`,
+        }),
       ),
     );
 
