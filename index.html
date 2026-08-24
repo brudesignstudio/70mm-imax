@@ -121,11 +121,6 @@
               <span class="ev__value" id="ev-value">0.0</span>
             </div>
           </div>
-          <div class="zoom" id="zoom" role="group" aria-label="Zoom">
-            <button type="button" data-zoom="0.5" id="btn-zoom-05" aria-pressed="false">0.5×</button>
-            <button type="button" data-zoom="1" aria-pressed="true">1×</button>
-            <button type="button" data-zoom="2" aria-pressed="false">2×</button>
-          </div>
           <canvas class="histogram" id="histogram" width="128" height="48" aria-label="Live histogram"></canvas>
         </div>
       </div>
@@ -147,19 +142,37 @@
       <button class="icon-btn icon-btn--sm" id="btn-settings" type="button" aria-label="Settings">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.8v2.4M12 18.8v2.4M4.5 4.5l1.7 1.7M17.8 17.8l1.7 1.7M2.8 12h2.4M18.8 12h2.4M4.5 19.5l1.7-1.7M17.8 6.2l1.7-1.7"/></svg>
       </button>
-      <!-- Capture mode. Photo runs the same gate, grade and border
-           as a take — one frame instead of a reel. -->
-      <div class="mode" id="mode-toggle" role="group" aria-label="Capture mode">
-        <button type="button" data-mode="photo" aria-pressed="false">PHOTO</button>
-        <button type="button" data-mode="video" aria-pressed="true">VIDEO</button>
+      <!-- The capture column: zoom above the shutter, mode below it.
+           All three are the same decision — what this press will
+           expose — so they stack on one axis through the button that
+           makes it, rather than scattering across the rail. -->
+      <div class="capture">
+        <!-- Zoom is a carousel, not a row: whichever level is
+             selected sits centred over the shutter and the rest
+             slide out either side of it. The slot each circle
+             occupies is set from JS (see updateZoomUI) because it
+             depends on which lenses this device actually has. -->
+        <div class="zoom" id="zoom" role="group" aria-label="Zoom">
+          <button type="button" data-zoom="0.5" id="btn-zoom-05" aria-pressed="false">0.5×</button>
+          <button type="button" data-zoom="1" aria-pressed="true">1×</button>
+          <button type="button" data-zoom="2" aria-pressed="false">2×</button>
+        </div>
+
+        <button class="shutter" id="btn-record" type="button" aria-label="Start recording" disabled>
+          <span class="shutter__inner" id="shutter-inner"></span>
+          <svg class="shutter__ring" viewBox="0 0 100 100" aria-hidden="true">
+            <circle class="shutter__track" cx="50" cy="50" r="45"/>
+            <circle class="shutter__progress" id="shutter-progress" cx="50" cy="50" r="45"/>
+          </svg>
+        </button>
+
+        <!-- Capture mode. Photo runs the same gate, grade and border
+             as a take — one frame instead of a reel. -->
+        <div class="mode" id="mode-toggle" role="group" aria-label="Capture mode">
+          <button type="button" data-mode="video" aria-pressed="true">VIDEO</button>
+          <button type="button" data-mode="photo" aria-pressed="false">PHOTO</button>
+        </div>
       </div>
-      <button class="shutter" id="btn-record" type="button" aria-label="Start recording" disabled>
-        <span class="shutter__inner" id="shutter-inner"></span>
-        <svg class="shutter__ring" viewBox="0 0 100 100" aria-hidden="true">
-          <circle class="shutter__track" cx="50" cy="50" r="45"/>
-          <circle class="shutter__progress" id="shutter-progress" cx="50" cy="50" r="45"/>
-        </svg>
-      </button>
       <button class="icon-btn icon-btn--sm" id="btn-guide" type="button" aria-label="16:9 framing guide" aria-pressed="false">
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <rect x="2.5" y="4" width="19" height="16" rx="1.6"/>

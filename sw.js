@@ -9,7 +9,7 @@
  * Recorded takes never touch the cache; they live in IndexedDB.
  */
 
-const VERSION = 'v11';
+const VERSION = 'v12';
 const CACHE = `imax70-${VERSION}`;
 
 const SHELL = [

@@ -293,6 +293,9 @@ class App {
     // stays hidden there rather than pretending.
     const half = $('#btn-zoom-05');
     if (half) half.hidden = !(await this.camera.findUltrawideDevice());
+    // Which circles exist decides where they sit, so the carousel is
+    // re-laid out once that is known — not before.
+    this.updateZoomUI();
   }
 
   applyPrefs(prefs) {
@@ -863,9 +866,29 @@ class App {
     haptic('tick');
   }
 
+  /**
+   * Place the zoom circles.
+   *
+   * The selected level is always the one centred over the shutter,
+   * so position is relative — each circle's --slot is its distance
+   * from the selected one, and CSS turns that into an offset. Only
+   * *visible* circles are counted: 0.5× is hidden on hardware with
+   * no ultra-wide lens (see configureCameraControls), and including
+   * it in the maths there would leave a gap where nothing is.
+   */
   updateZoomUI() {
-    for (const btn of $$('#zoom button')) {
-      btn.setAttribute('aria-pressed', parseFloat(btn.dataset.zoom) === this.zoomLevel ? 'true' : 'false');
+    const all = $$('#zoom button');
+    const shown = all.filter((b) => !b.hidden);
+    const selected = shown.findIndex((b) => parseFloat(b.dataset.zoom) === this.zoomLevel);
+
+    for (const btn of all) {
+      const isSelected = parseFloat(btn.dataset.zoom) === this.zoomLevel;
+      btn.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
+      const i = shown.indexOf(btn);
+      // A hidden circle keeps no slot: it must not animate in from
+      // a stale position if its lens later becomes available.
+      if (i < 0) btn.style.removeProperty('--slot');
+      else btn.style.setProperty('--slot', String(selected < 0 ? i : i - selected));
     }
   }
 

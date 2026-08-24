@@ -528,36 +528,77 @@ body {
    continuously-updating live video, and re-blurring that every
    frame costs real GPU time for no visible gain over a flat panel.
    ============================================================ */
+/* ============================================================
+   ZOOM — a carousel centred on the shutter
+   Each level is its own circle, and the selected one always sits
+   directly above the shutter with the others parked either side.
+   Selecting a different level slides the whole set along rather
+   than moving a highlight between fixed positions: the control
+   reads as one physical ring being turned, and the level you are
+   actually on never moves out from under your thumb.
+
+   Position comes from --slot (0 = centred, ±1 = one step out),
+   written per button by updateZoomUI() — it depends on which
+   lenses the device has, which CSS cannot know.
+   ============================================================ */
 .zoom {
-  pointer-events: auto;
+  /* Declared here, not only on .capture: an undefined custom
+     property makes the whole calc() below invalid, which silently
+     drops the transform and stacks every circle on one spot. The
+     control must survive being lifted out of its column. */
+  --zoom-step: 42px;
+  position: relative;
   z-index: 5;
-  display: flex;
-  gap: 4px;
-  padding: 4px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, 0.42);
-  border: 1px solid var(--line);
-  box-shadow: var(--rim), 0 4px 14px rgba(0, 0, 0, 0.45);
+  width: 100%;
+  height: 38px;
+  pointer-events: none;   /* the stage; only the circles are hit */
 }
 .zoom button {
-  min-width: 34px;
-  height: 26px;
-  padding: 0 9px;
-  border-radius: 999px;
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 30px; height: 30px;
+  padding: 0;
+  border-radius: 50%;
   font-family: var(--mono);
-  font-size: 10.5px;
+  font-size: 9.5px;
   font-weight: 600;
-  letter-spacing: 0.02em;
+  letter-spacing: 0;
   color: var(--ink-dim);
-  transition: color 180ms var(--ease), background 180ms var(--ease);
+  background: rgba(0, 0, 0, 0.42);
+  border: 1px solid var(--line);
+  box-shadow: var(--rim), 0 3px 10px rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+  transform: translate(-50%, -50%) translateX(calc(var(--slot, 0) * var(--zoom-step)));
+  transition: transform 340ms var(--ease), width 240ms var(--ease),
+              height 240ms var(--ease), color 200ms var(--ease),
+              background 200ms var(--ease), font-size 240ms var(--ease);
 }
 .zoom button[aria-pressed="true"] {
+  width: 38px; height: 38px;
+  font-size: 11px;
   color: #02141d;
   background: var(--accent);
-  box-shadow: 0 0 12px var(--glow);
+  border-color: transparent;
+  box-shadow: 0 0 14px var(--glow);
 }
+.zoom button:active { filter: brightness(1.15); }
 .zoom button[hidden] { display: none; }
 .app[data-recording="true"] .zoom { opacity: 0.4; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .zoom button { transition-duration: 1ms; }
+}
+
+/* ============================================================
+   CAPTURE COLUMN — zoom / shutter / mode, one axis
+   ============================================================ */
+.capture {
+  --zoom-step: 42px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
 
 /* ============================================================
    CAPTURE MODE — photo / video
@@ -1264,6 +1305,20 @@ body {
 }
 .app[data-gate="portrait"] .rail--left  { top: 0;    padding-top: var(--safe-t); }
 .app[data-gate="portrait"] .rail--right { bottom: 0; padding-bottom: var(--safe-b); }
+
+/* The camera's bottom rail carries a three-row column (zoom,
+   shutter, mode) rather than a single row of pebbles, so it needs
+   real height — and the gate has to give that height back, or the
+   picture would sit under the controls. --rail-capture is the one
+   number both read, so they can never disagree. */
+.app[data-gate="portrait"] .screen--camera { --rail-capture: clamp(148px, 23vh, 196px); }
+.app[data-gate="portrait"] .screen--camera .rail--right {
+  height: var(--rail-capture);
+  align-items: center;
+}
+.app[data-gate="portrait"] .screen--camera .stage {
+  padding-bottom: calc(var(--rail-capture) + var(--safe-b));
+}
 
 /* Playback still overlays its HUD on the picture — there is no
    spare screen there, the developed take fills the frame — so the
