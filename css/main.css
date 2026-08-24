@@ -590,7 +590,7 @@ body {
 }
 
 /* ============================================================
-   CAPTURE COLUMN — zoom / shutter / mode, one axis
+   CAPTURE COLUMN — zoom / shutter / bottom row, one axis
    ============================================================ */
 .capture {
   --zoom-step: 42px;
@@ -599,6 +599,21 @@ body {
   align-items: center;
   gap: 10px;
 }
+
+/* Gallery — mode — guide, on one line.
+   1fr auto 1fr keeps the mode toggle centred under the shutter no
+   matter that the two flanking buttons are different sizes; a flex
+   row would let the wider one push it off centre. The flanking
+   cells are centred within their own track so both buttons sit a
+   consistent distance out rather than hugging the screen edges. */
+.capture__row {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.capture__row > .icon-btn { justify-self: center; }
 
 /* ============================================================
    CAPTURE MODE — photo / video
@@ -732,6 +747,24 @@ body {
 }
 .icon-btn.danger { color: var(--danger); }
 .icon-btn[disabled] { opacity: 0.3; }
+
+/* The gallery button wearing the last frame shot. It fills the
+   pebble edge to edge — inset by the border so the glass rim still
+   reads as the button's edge — and the icon underneath is hidden
+   only once there is a real thumbnail to replace it, so the button
+   is never briefly blank. */
+.icon-btn__thumb {
+  position: absolute;
+  inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+  /* The strip's own margins are near-black; a hairline keeps the
+     thumbnail from dissolving into the ground behind it. */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+}
+.icon-btn__thumb[hidden] { display: none; }
+#btn-gallery.has-thumb > svg { visibility: hidden; }
 
 /* Flash: lit when on, struck through where the platform will not
    give a web page torch control at all. */
@@ -1311,10 +1344,14 @@ body {
    real height — and the gate has to give that height back, or the
    picture would sit under the controls. --rail-capture is the one
    number both read, so they can never disagree. */
-.app[data-gate="portrait"] .screen--camera { --rail-capture: clamp(148px, 23vh, 196px); }
+.app[data-gate="portrait"] .screen--camera { --rail-capture: clamp(164px, 25vh, 212px); }
 .app[data-gate="portrait"] .screen--camera .rail--right {
   height: var(--rail-capture);
   align-items: center;
+  /* The guide button's caption hangs below its pebble, and that
+     pebble now sits on the bottom row — so the rail keeps a little
+     clearance under it or the caption would run off the screen. */
+  padding-bottom: calc(var(--safe-b) + 12px);
 }
 .app[data-gate="portrait"] .screen--camera .stage {
   padding-bottom: calc(var(--rail-capture) + var(--safe-b));

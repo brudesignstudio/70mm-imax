@@ -28,7 +28,13 @@ export class Gallery {
     this.list = $('#gallery-list');
     this.empty = $('#gallery-empty');
     this.badge = $('#gallery-count');
+    this.button = $('#btn-gallery');
+    this.buttonThumb = $('#gallery-thumb');
     this._urls = [];
+    // Held apart from _urls: that lot is revoked wholesale on every
+    // refresh, and this one has to outlive the rebuild — it is worn
+    // by a button that stays on screen the whole time.
+    this._buttonURL = null;
   }
 
   /** Read every take and rebuild the grid. */
@@ -41,9 +47,41 @@ export class Gallery {
     this.list.textContent = '';
     this.empty.hidden = takes.length > 0;
     this._setBadge(takes.length);
+    this._setButtonThumb(takes);
 
     for (const take of takes) this.list.append(this._card(take));
     return takes.length;
+  }
+
+  /**
+   * Dress the gallery button in the most recent frame.
+   *
+   * takes arrive newest-first, but the newest one is not guaranteed
+   * to *have* a thumbnail — captureThumbnail is best-effort and
+   * deliberately never costs anyone a take — so this walks forward
+   * to the first frame that actually carries one rather than
+   * blanking the button over a missing image.
+   */
+  _setButtonThumb(takes) {
+    if (!this.buttonThumb || !this.button) return;
+    const latest = takes.find((t) => t.thumb);
+
+    if (this._buttonURL) {
+      URL.revokeObjectURL(this._buttonURL);
+      this._buttonURL = null;
+    }
+
+    if (!latest) {
+      this.buttonThumb.removeAttribute('src');
+      this.buttonThumb.hidden = true;
+      this.button.classList.remove('has-thumb');
+      return;
+    }
+
+    this._buttonURL = URL.createObjectURL(latest.thumb);
+    this.buttonThumb.src = this._buttonURL;
+    this.buttonThumb.hidden = false;
+    this.button.classList.add('has-thumb');
   }
 
   _setBadge(n) {
@@ -113,7 +151,13 @@ export class Gallery {
     this._urls = [];
   }
 
-  destroy() { this._revoke(); }
+  destroy() {
+    this._revoke();
+    if (this._buttonURL) {
+      URL.revokeObjectURL(this._buttonURL);
+      this._buttonURL = null;
+    }
+  }
 }
 
 /**
