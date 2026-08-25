@@ -112,9 +112,11 @@ export const ROTATE_PROMPT = 'Hold your phone upright to record.';
    FRAMING GUIDE
    ---------------------------------------------------------------
    A 1.43 gate is taller than every screen the finished film is
-   likely to be shown on. The guide draws where a 16:9 camera
+   likely to be shown on. The guide draws where a 1.90:1 camera
    pointed at the same scene would have cut — same width, less
-   height — so a shot can be composed to survive the crop.
+   height — so a shot can be composed to survive the crop. 1.90:1
+   is digital IMAX's own flat-screen ratio, the format most houses
+   actually project a "regular" (non-70mm) IMAX release at.
 
    Same width and not same height because that is the honest
    comparison: two cameras behind the same lens see the same
@@ -123,11 +125,11 @@ export const ROTATE_PROMPT = 'Hold your phone upright to record.';
    =============================================================== */
 export const GUIDE = {
   /** The reference format the guide marks out. */
-  ASPECT: 16 / 9,
-  LABEL: '16:9',
-  /** The framing button's own caption — spelled out, since "16:9"
+  ASPECT: 1.90,
+  LABEL: '1.90:1',
+  /** The framing button's own caption — spelled out, since "1.90:1"
    *  alone reads as a spec number rather than a control. */
-  BUTTON_LABEL: '16:9 Guide',
+  BUTTON_LABEL: '1.90:1 Guide',
 };
 
 /* ===============================================================
@@ -566,7 +568,7 @@ export const PREFS = {
   haptics: true,
   /** Steadicam on by default — see STEADY. */
   steady: true,
-  /** The 16:9 framing guide — see GUIDE. On by default, since a
+  /** The 1.90:1 framing guide — see GUIDE. On by default, since a
    *  1.43 gate is taller than every screen the finished film is
    *  likely to be shown on — the operator can switch it off once
    *  they know they don't need the reminder. */

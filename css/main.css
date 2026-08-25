@@ -72,13 +72,13 @@
      pre-script-fallback reasoning as --gate-aspect above. */
   --export-aspect: 0.5625;
 
-  /* The 16:9 framing guide's band, as a share of the gate's own
-     height: (1 / 1.7778) ÷ (1 / 1.43). Two cameras behind the same
+  /* The 1.90:1 framing guide's band, as a share of the gate's own
+     height: (1 / 1.90) ÷ (1 / 1.43). Two cameras behind the same
      lens see the same width, so the narrower format is simply
-     shorter — 80.44% of a 1.43:1 frame, leaving 9.78% lost off the
+     shorter — 75.26% of a 1.43:1 frame, leaving 12.37% lost off the
      top and the same off the bottom. Mirrored from GUIDE.ASPECT. */
-  --guide-band: 80.4375%;
-  --guide-inset: 9.78125%;
+  --guide-band: 75.2632%;
+  --guide-inset: 12.3684%;
 }
 
 body {
@@ -301,7 +301,7 @@ body {
 .gate__mark--br { bottom: 10px; right: 10px; border-left: 0; border-top: 0; }
 
 /* ============================================================
-   16:9 FRAMING GUIDE
+   1.90:1 FRAMING GUIDE
    ------------------------------------------------------------
    Where a widescreen camera behind this same lens would have cut.
    Hairlines rather than a mask: the operator still has to see the
@@ -799,7 +799,7 @@ body {
 #btn-torch.is-unavailable { opacity: 0.4; }
 #btn-torch.is-unavailable .icon-btn__slash { opacity: 1; }
 
-/* The 16:9 guide toggle. Lit when the guide is on, the same way
+/* The 1.90:1 guide toggle. Lit when the guide is on, the same way
    the AE/AWB locks read — it is a mode, not an action. */
 #btn-guide[aria-pressed="true"] {
   color: var(--accent);

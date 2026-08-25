@@ -70,7 +70,7 @@ class App {
     $('#tag-format').textContent = `${FORMAT.LABEL} · 70 mm`;
     $('#pb-meta').textContent = `${FORMAT.LABEL} · 70 mm`;
 
-    // The 16:9 guide sits where the fullscreen button used to.
+    // The 1.90:1 guide sits where the fullscreen button used to.
     // Fullscreen was never much of a control — it does nothing at
     // all on iOS Safari, which implements no Fullscreen API for
     // arbitrary elements, and the shutter already asks for it
@@ -306,9 +306,9 @@ class App {
   }
 
   /**
-   * The 16:9 framing guide.
+   * The 1.90:1 framing guide.
    *
-   * Two hairlines across the gate marking where a 16:9 camera
+   * Two hairlines across the gate marking where a 1.90:1 camera
    * behind the same lens would have cut — full width, GUIDE.ASPECT
    * tall, centred. It is a viewfinder overlay and nothing else: it
    * is never composited into a frame, never recorded, and never
